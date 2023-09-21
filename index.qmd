@@ -865,7 +865,7 @@ df %>%
 
 &nbsp;
 
-**The Dallas County median income in 2021 was `r scales::dollar(dallas_county_acs %>% pull(B19013_001))`, so this survey sample is poorer than Dallas County as a whole.**
+**The Dallas County median income in 2021 was `r scales::dollar(dallas_county_acs %>% pull(B19013_001))`, so this survey sample is lower-income than Dallas County as a whole.**
 
 ```{r empl02, dev = "png", dev.args=list(bg="transparent")}
 
@@ -921,7 +921,7 @@ df %>%
 
 &nbsp;
 
-**The Dallas County poverty rate in 2021 was `r scales::percent(dallas_county_acs %>% pull(povertyRate))`, so this survey sample is poorer than Dallas County as a whole.**
+**The Dallas County poverty rate in 2021 was `r scales::percent(dallas_county_acs %>% pull(povertyRate))`, so this survey sample is lower-income than Dallas County as a whole.**
 
 ```{r empl03, dev = "png", dev.args=list(bg="transparent")}
 
@@ -1371,7 +1371,102 @@ df %>%
   scale_fill_manual(values = c("Yes" = palette_cpal_main[1], "No" = palette_cpal_main[2], "Prefer not to answer" = "#ababab"),
                     breaks = c("Yes", "No", "Prefer not to answer"))
 
+
+df %>% 
+  filter(rowSums(is.na(select(., starts_with("CPAL.FTAX.001.b_")))) != length(select(., starts_with("CPAL.FTAX.001.b_")))) %>%
+  gather(key = "answer", value = "value", starts_with("CPAL.FTAX.001.b_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1 & CPAL.FTAX.001 == 1, na.rm = T)/sum(CPAL.FTAX.001 == 1, na.rm = T))) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[7]$") ~ palette_cpal_main[1],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = 1.1, 
+          size = 8, 
+          colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1, 
+        size = 8, 
+        colour = "darkgrey") +
+  labs(title = "Tax filers who found that...") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_text(size = 14),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.FTAX.001.b_1" = "I couldn't find the right forms",
+                 "CPAL.FTAX.001.b_2" = "I found it difficult to complete the right forms",
+                 "CPAL.FTAX.001.b_3" = "I was confused on where to begin" ,
+                 "CPAL.FTAX.001.b_4" = "I had trouble finding time",
+                 "CPAL.FTAX.001.b_5" = "I didn't understand how to file",
+                 "CPAL.FTAX.001.b_6" = "I needed help but didn't know where to find it",
+                 "CPAL.FTAX.001.b_7" = "I didn't have any challenges",
+                 "CPAL.FTAX.001.b_8" = "I experienced a challenge not listed")
+    return(stringr::str_wrap(recodes[x], width = 40))
+  })
+
+
+df %>% 
+  filter(rowSums(is.na(select(., starts_with("CPAL.FTAX.001.c_")))) != length(select(., starts_with("CPAL.FTAX.001.c_"))))   %>%
+  gather(key = "answer", value = "value", starts_with("CPAL.FTAX.001.c_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1 & CPAL.FTAX.001 == 0, na.rm = T)/sum(CPAL.FTAX.001 == 0, na.rm = T))) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[7]$") ~ palette_cpal_main[2],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = 1.1, 
+          size = 8, 
+          colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1, 
+        size = 8, 
+        colour = "darkgrey") +
+  labs(title = stringr::str_wrap("Respondents who didn't do their taxes because...", width = 40)) +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_text(size = 14),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.FTAX.001.c_1" = "I don't understand what forms I need",
+                 "CPAL.FTAX.001.c_2" = "I am confused on where to begin",
+                 "CPAL.FTAX.001.c_3" = "I don't have time" ,
+                 "CPAL.FTAX.001.c_4" = "I don't understand how to file",
+                 "CPAL.FTAX.001.c_5" = "I need help and I don't know where to find it",
+                 "CPAL.FTAX.001.c_6" = "I don't think I make enough to file",
+                 "CPAL.FTAX.001.c_7" = "I experienced a challenge not listed")
+    return(stringr::str_wrap(recodes[x], width = 35))
+  })
+
+
 ```
+
 :::
 :::
 
@@ -1685,7 +1780,7 @@ df %>%
 ::: g-col-5
 ### CPAL.DEBT.007
 
-> Current employment status
+> Please describe your housing status
 
 **Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.DEBT.007)))/nrow(df), accuracy = 0.1)`
 :::
@@ -1843,6 +1938,26 @@ df %>%
 :::
 
 ::: g-col-7
+
+&nbsp;
+
+:::grid
+
+:::g-col-1
+
+<i class="bi bi-flag"></i>
+
+:::
+
+:::g-col-11
+
+**`r scales::percent(nrow(df %>% filter(CPAL.MH.009 == 1, !is.na(CPAL.MH.009)))/nrow(df %>% filter(!is.na(CPAL.MH.009))), accuracy = 0.1)` of renters report being evicted in the past 30 days.**
+
+:::
+
+:::
+
+
 ```{r home04, dev = "png", dev.args=list(bg="transparent")}
 
 # palette_cpal_main[1] blue
@@ -1884,6 +1999,87 @@ df %>%
 ```
 :::
 
+:::
+
+::: grid
+
+::: g-col-5
+
+:::
+
+::: g-col-7
+
+```{r home04_2, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.MH.009), CPAL.MH.009 %in% c(0:1)) %>%
+  group_by(`Income Bracket`) %>%
+  summarize(`Not evicted` = sum(CPAL.MH.009 == 0)/n(), `Evicted` = sum(CPAL.MH.009 == 1)/n()) %>%
+  gather(key = "evicted", value = "prop", -`Income Bracket`) %>%
+  mutate(
+    evicted = factor(
+      evicted,
+    levels = c("Not evicted","Evicted"))
+  ) %>%
+  ggplot(aes(x = `Income Bracket`, y = prop, fill = `Income Bracket`, alpha = evicted)) +
+  geom_text(aes(label = ifelse(evicted == "Evicted", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+        position = position_stack(), hjust = -0.1, size = 8, colour = "darkgrey") +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  coord_flip() +
+  labs(title = "Evictions by income") +
+  theme(
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+
+
+df %>%
+  filter(!is.na(CPAL.MH.009), CPAL.MH.009 %in% c(0:1)) %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  summarize(`Not evicted` = sum(CPAL.MH.009 == 0)/n(), `Evicted` = sum(CPAL.MH.009 == 1)/n()) %>%
+  gather(key = "evicted", value = "prop", -CPAL.DEMO.007.2) %>%
+  mutate(
+    evicted = factor(
+      evicted,
+    levels = c("Not evicted","Evicted"))
+  ) %>%
+  ggplot(aes(x = CPAL.DEMO.007.2, y = prop, fill = CPAL.DEMO.007.2, alpha = evicted)) +
+  geom_text(aes(label = ifelse(evicted == "Evicted", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+        position = position_stack(), hjust = -0.1, size = 7, colour = "darkgrey") +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  coord_flip() +
+  labs(title = "Evictions by race") +
+  theme(
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+
+```
+
+:::
+
+:::
+
+::: {.column-margin}
+
+Note: evictions $n=`r nrow(df %>% filter(CPAL.MH.009 == 1))`$.
+
+:::
+
+::: grid
+
 ::: g-col-5
 ### CPAL.MH.010
 
@@ -1908,7 +2104,7 @@ df %>%
 
 :::g-col-11
 
-**Over `r scales::percent(nrow(df %>% filter(CPAL.MH.010 == 1, !is.na(CPAL.MH.010)))/nrow(df %>% filter(!is.na(CPAL.MH.010))), accuracy = 0.1)` of homeowners report being foreclosed on in the past 30 days.**
+**`r scales::percent(nrow(df %>% filter(CPAL.MH.010 == 1, !is.na(CPAL.MH.010)))/nrow(df %>% filter(!is.na(CPAL.MH.010))), accuracy = 0.1)` of homeowners report being foreclosed on in the past 30 days.**
 
 :::
 
@@ -1956,31 +2152,41 @@ df %>%
 
 Most homeowners make less than \$100,000, as do **all** who were foreclosed on.
 
+:::
+
+:::
+
+::: grid
+
+::: g-col-5
+:::
+
+::: g-col-7
 ```{r home05_2, dev = "png", dev.args=list(bg="transparent")}
 
-df %>%
-  filter(Annual2023Income < 500000) %>%
-  filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
-  mutate(CPAL.MH.010 = case_when(
-    CPAL.MH.010 == 0 ~ "Not foreclosed on",
-    CPAL.MH.010 == 1 ~ "Foreclosed on",
-    TRUE ~ "Other"
-  )) %>%
-  ggplot(aes(x = Annual2023Income, fill = CPAL.MH.010)) +
-  geom_histogram(binwidth = 10000, boundary = 0) +
-  scale_x_continuous(
-    labels = scales::dollar_format(),
-    limits = c(0, 500000)
-  ) +
-  theme_minimal() +
-  theme(axis.title.x = element_blank(),
-        plot.background = element_rect(fill = "transparent", colour = NA),
-        panel.background = element_rect(fill = "transparent", colour = NA),
-        strip.background = element_rect(fill = "transparent", colour = NA),
-        legend.text = element_text(size = 12)
-        ) +
-  scale_fill_manual(values = c("Foreclosed on" = palette_cpal_main[2], "Not foreclosed on" = palette_cpal_main[1]),
-                    breaks = c("Foreclosed on", "Not foreclosed on"))
+# df %>%
+#   filter(Annual2023Income < 500000) %>%
+#   filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
+#   mutate(CPAL.MH.010 = case_when(
+#     CPAL.MH.010 == 0 ~ "Not foreclosed on",
+#     CPAL.MH.010 == 1 ~ "Foreclosed on",
+#     TRUE ~ "Other"
+#   )) %>%
+#   ggplot(aes(x = Annual2023Income, fill = CPAL.MH.010)) +
+#   geom_histogram(binwidth = 10000, boundary = 0) +
+#   scale_x_continuous(
+#     labels = scales::dollar_format(),
+#     limits = c(0, 500000)
+#   ) +
+#   theme_minimal() +
+#   theme(axis.title.x = element_blank(),
+#         plot.background = element_rect(fill = "transparent", colour = NA),
+#         panel.background = element_rect(fill = "transparent", colour = NA),
+#         strip.background = element_rect(fill = "transparent", colour = NA),
+#         legend.text = element_text(size = 12)
+#         ) +
+#   scale_fill_manual(values = c("Foreclosed on" = palette_cpal_main[2], "Not foreclosed on" = palette_cpal_main[1]),
+#                     breaks = c("Foreclosed on", "Not foreclosed on"))
 
 df %>%
   filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
@@ -2009,8 +2215,51 @@ df %>%
   ) +
   scale_alpha_manual(values = c(0.2, 1))
 
+df %>%
+  filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  summarize(`Not foreclosed on` = sum(CPAL.MH.010 == 0)/n(), `Foreclosed on` = sum(CPAL.MH.010 == 1)/n()) %>%
+  gather(key = "foreclosed", value = "prop", -CPAL.DEMO.007.2) %>%
+  mutate(
+    foreclosed = factor(
+      foreclosed,
+    levels = c("Not foreclosed on","Foreclosed on"))
+  ) %>%
+  ggplot(aes(x = CPAL.DEMO.007.2, y = prop, fill = CPAL.DEMO.007.2, alpha = foreclosed)) +
+  geom_text(aes(label = ifelse(foreclosed == "Foreclosed on", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+        position = position_stack(), hjust = -0.1, size = 8, colour = "darkgrey") +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  coord_flip() +
+  labs(title = "Foreclosures by race") +
+  theme(
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+
 ```
 :::
+
+:::
+
+
+::: {.column-margin}
+
+Note: foreclosures $n=`r nrow(df %>% filter(CPAL.MH.010 == 1))`$.
+
+&nbsp;
+
+The selection of homeowners in lower income ranges is likely due to income misentry.
+
+:::
+
+
+::: grid
 
 ::: g-col-5
 ### CPAL.DEMO.011
