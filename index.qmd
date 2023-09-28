@@ -69,9 +69,7 @@ data <- data2raw %>%
   # select(all_of(cols)) %>%
   select(-ends_with("TEXT"))
 
-```
 
-```{r preprocessing}
 response_maps <- list(
   CPAL.DEMO.007.2 = c(
     "1" = "American Indian or Alaska Native",
@@ -219,6 +217,7 @@ df <- data %>%
 #     df <- map_only(df, code)
 #   }
 # }
+
 
 ```
 
@@ -1038,6 +1037,8 @@ df %>%
   geom_bar(stat = "identity", position = "dodge", width = 0.7) +
   geom_text(aes(label = ifelse(prop > 0.05, scales::percent(prop, scale = 100), "")), 
             position = position_dodge(width=0.9), hjust = 1.1, size = 8, colour = "white") +
+  geom_text(aes(label = ifelse(prop < 0.05, scales::percent(prop, scale = 100), "")), 
+          position = position_dodge(width=0.9), hjust = -0.1, size = 8, colour = "darkgrey") +
   labs(fill = "") +
   theme_minimal() +
   theme(
@@ -1345,6 +1346,47 @@ df %>%
             `Median respondent age` = paste0(as.character(round(median(age_yr, na.rm = TRUE)), digits = 2), " yrs."),
             `Pct. with children under 6` = scales::percent(mean(ChildUnder6))) %>%
   knitr::kable()
+
+basics_df <- df %>%
+  filter(!is.na(CPAL.FSTR.001)) %>%
+  gather(key = "answer", value = "value", starts_with("CPAL.DALLASCORE.002_")) %>%
+  filter(answer != "CPAL.DALLASCORE.002_999") %>%
+  group_by(CPAL.DEMO.001) %>%
+  summarize(pct = sum(value, na.rm = TRUE) / n(),
+            n = n(), 
+            n_true = sum(value, na.rm = TRUE),
+            .groups = 'drop') %>%
+  mutate(GEOID = as.character(CPAL.DEMO.001)) %>%
+  left_join(zctas_dallas, by = "GEOID") %>%
+  mutate(
+    per_capita = case_when(
+      estimate > 0 ~ n/estimate,
+      TRUE ~ 0)
+  ) %>%
+  filter(!is.na(NAME)) %>%
+  st_as_sf()
+
+leaflet(safety_df) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~colorNumeric("Reds", pct)(pct),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    fillOpacity = 0.7,
+    highlight = TRUE,
+    label = ~as.character(GEOID),
+    popup = ~paste0("ZIP: ", GEOID, 
+                    "<br/>Percent concerned: ", scales::percent(pct, accuracy = 0.1),
+                    "<br/>Count: ", n, 
+                    "<br/>Per capita: ", round(per_capita*1000, digits = 2), "/1000"
+                    )
+  ) %>%
+  addLegend(
+    pal = colorNumeric("Reds", safety_df$pct),
+    values = safety_df$pct,
+    labels = scales::percent(safety_df$pct, accuracy = 0.1), 
+    title = "Percent who report <br/>concern with safety")
 
 ```
 :::
@@ -2031,7 +2073,7 @@ df %>%
   summarise(percentage = (sum(value == 1, na.rm = TRUE)/n())) %>%
   ggplot(aes(x = `Income Bracket`, y = answer, fill = percentage)) +
   geom_tile() +
-  scale_fill_gradient(low = scales::alpha(palette_cpal_main[2], 0), high = palette_cpal_main[2], labels = scales::percent_format()) +
+  scale_fill_gradient(low = scales::alpha(palette_cpal_main[2], 0), high = scales::alpha(palette_cpal_main[2], 1), labels = scales::percent_format()) +
   labs(title = "Heatmap by Income Bracket") +
   scale_y_discrete(labels = function(x) {
     recodes <- c("CPAL.DEMO.011_1" = "Two parents",
@@ -2869,6 +2911,46 @@ scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)
                  "CPAL.DALLASCORE.002_999" = "Does not apply")
     return(stringr::str_wrap(recodes[x], width = 30))
   })
+
+safety_df <- df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.DALLASCORE.002_")) %>%
+  filter(answer != "CPAL.DALLASCORE.002_999") %>%
+  group_by(CPAL.DEMO.001) %>%
+  summarize(pct = sum(value, na.rm = TRUE) / n(),
+            n = n(), 
+            n_true = sum(value, na.rm = TRUE),
+            .groups = 'drop') %>%
+  mutate(GEOID = as.character(CPAL.DEMO.001)) %>%
+  left_join(zctas_dallas, by = "GEOID") %>%
+  mutate(
+    per_capita = case_when(
+      estimate > 0 ~ n/estimate,
+      TRUE ~ 0)
+  ) %>%
+  filter(!is.na(NAME)) %>%
+  st_as_sf()
+
+leaflet(safety_df) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~colorNumeric("Reds", pct)(pct),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    fillOpacity = 0.7,
+    highlight = TRUE,
+    label = ~as.character(GEOID),
+    popup = ~paste0("ZIP: ", GEOID, 
+                    "<br/>Percent concerned: ", scales::percent(pct, accuracy = 0.1),
+                    "<br/>Count: ", n, 
+                    "<br/>Per capita: ", round(per_capita*1000, digits = 2), "/1000"
+                    )
+  ) %>%
+  addLegend(
+    pal = colorNumeric("Reds", safety_df$pct),
+    values = safety_df$pct,
+    labels = scales::percent(safety_df$pct, accuracy = 0.1), 
+    title = "Percent who report <br/>concern with safety")
 
 ```
 :::
