@@ -1,0 +1,47 @@
+"0","df %>% 
+  gather(key = ""answer"", value = ""value"", starts_with(""CPAL.DALLASCORE.002_"")) %>%
+  filter(answer != ""CPAL.DALLASCORE.002_999"") %>%
+  group_by(CPAL.DEMO.001) %>%
+  summarize(pct = sum(value, na.rm = TRUE) / n(),
+            n = n(), 
+            n_true = sum(value, na.rm = TRUE),
+            .groups = 'drop') %>%
+  mutate(GEOID = as.character(CPAL.DEMO.001)) %>%
+  left_join(zctas_dallas, by = ""GEOID"") %>%
+  mutate(
+    per_capita = case_when(
+      estimate > 0 ~ n/estimate,
+      TRUE ~ 0)
+  ) %>%
+  filter(!is.na(NAME)) %>%
+  st_as_sf() %>%
+  leaflet() %>%
+  addProviderTiles(""CartoDB.Positron"") %>%
+  addPolygons(
+    fillColor = ~colorNumeric(""Reds"", pct)(pct),
+    weight = 1,
+    opacity = 1,
+    color = ""white"",
+    fillOpacity = 0.7,
+    highlight = TRUE,
+    label = ~as.character(GEOID),
+    popup = ~paste0(""ZIP: "", GEOID, 
+                    ""<br/>Percent concerned: "", scales::percent(pct, accuracy = 0.1),
+                    ""<br/>Count: "", n, 
+                    ""<br/>Per capita: "", round(per_capita*1000, digits = 2), ""/1000""
+                    )
+  ) %>%
+  addLegend(
+    pal = colorNumeric(""Reds"", df$pct),
+    values = df$pct,
+    labels = function(values) { scales::percent(values, accuracy = 0.1) }, 
+    title = ""Percent who report <br/>concern with safety""
+  )
+"
+"2","Warning: Unknown or uninitialised column: `pct`."
+"2","Warning: Unknown or uninitialised column: `pct`."
+"2","Warning: no non-missing arguments to min; returning Inf"
+"2","Warning: no non-missing arguments to max; returning -Inf"
+"2","Error in round(transform(x), digits) : 
+  non-numeric argument to mathematical function
+"
