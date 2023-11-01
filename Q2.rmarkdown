@@ -1,0 +1,3139 @@
+---
+title: "RAPID Q2 Overview"
+---
+
+```{r setup, output = F}
+library(tidyverse)
+library(tidycensus)
+library(ggplot2)
+library(cpaltemplates)
+library(haven)
+library(readxl)
+library(purrr)
+library(sf)
+library(leaflet)
+library(DT)
+
+census_api_key("7b32db9a1faf6b92a567a778f7763e70285eba97", install = TRUE, overwrite = TRUE)
+
+library(tigris) # To get county shapefiles
+
+zctas_national <- get_acs(geography = "zcta", variables = "B01003_001", geometry = TRUE) %>%
+  st_as_sf()
+
+dallas_county <- get_acs(geography = "county", variables = "B01003_001", state = "TX", county = "Dallas", geometry = TRUE) %>%
+  st_as_sf()
+
+dallas_county_acs <- get_acs(geography = "county", 
+                             variables = c("B17001_001", "B17001_002E", "B19013_001E"), 
+                             year = 2021, 
+                             survey = "acs5",
+                             state = "TX",
+                             county = "Dallas") %>%
+  select(-moe) %>%
+  spread(key = variable, value = estimate) %>%
+  mutate(povertyRate = B17001_002/B17001_001)
+
+zctas_dallas <- zctas_national[st_intersects(dallas_county, zctas_national, sparse = FALSE), ]
+
+# priorities <- read_excel("D:/CPAL Dropbox/Analytics/04_Projects/RAPID/CPAL_Codebook.8.2.23_with_priorities.xlsx") %>%
+# drop_na(PRIORITY) %>%
+# pull(1)
+demographics <- c(
+  "CPALID",
+  "Source",
+  "UserLanguage",
+  "age_yr",
+  "Annual2023Income",
+  "Income2023M2Y",
+  "Income2023W2Y",
+  "POVERTYLine2023"
+)
+# 
+# data1raw <- read_sav("data/Q1 2023 Responses/RAPID-Dallas Initial Recruitment 1 Data.sav") %>%
+#   mutate(CPAL.DEMO.007.2 = as.character(CPAL.DEMO.007.2))
+# data2raw <- read_sav("data/Q2 2023 Responses/RAPID-DALLAS_MasterFile_For_CPAL.8.2.23 (1).sav")
+data2raw <- read_sav("~/data/RAPID/RAPID-DALLAS_MasterFile_For_CPAL.8.2.23.sav")
+# data <- read_csv("C:/users/taylo/CPAL Dropbox/Analytics/04_Projects/RAPID/example.csv")
+# 
+# cols <- Reduce(intersect, list(c(demographics, priorities),
+#                                # colnames(data1raw),
+#                                colnames(data2raw)))
+data <- data2raw %>%
+  # select(all_of(cols)) %>%
+  select(-ends_with("TEXT"))
+
+
+response_maps <- list(
+  CPAL.DEMO.007.2 = c(
+    "1" = "American Indian or Alaska Native",
+    "2" = "Asian",
+    "3" = "Black or African American",
+    "4" = "Native Hawaiian or Other Pacific Islander",
+    "5" = "White",
+    "6" = "Other",
+    "8" = "Middle Eastern or North African",
+    "9" = "Hispanic, Latine, or Latin origin"
+  ),
+  CPAL.DEMO.009 = c(
+    summarize = F,
+    "1" = "English",
+    "2" = "Arabic",
+    "3" = "Chinese",
+    "4" = "French",
+    "5" = "German",
+    "6" = "Italian",
+    "7" = "Japanese",
+    "8" = "Korean",
+    "9" = "Russian",
+    "10" = "Spanish",
+    "11" = "Vietnamese",
+    "12" = "Other",
+    "13" = "ASL/Sign Language"
+  ),
+  CPAL.DEMO.010 = c(
+    summarize = F,
+    "0" = "No",
+    "1" = "Yes",
+    "-98" = "Unsure",
+    "-97" = "Do not wish to disclose",
+    "-99" = "Not applicable"
+  ),
+  CPAL.DEMO.011 = c(
+    summarize = T,
+    "1" = "Two parents",
+    "2" = "One parent",
+    "3" = "Other children/siblings older than 6",
+    "4" = "Adult relatives",
+    "5" = "Adult non-relatives",
+    "6" = "Other"
+  ),
+  CPAL.DEMO.014 = c(
+    summarize = F,
+    "1" = "Less than high school",
+    "2" = "Some high school",
+    "3" = "High school diploma or equivalent",
+    "4" = "Some college",
+    "5" = "Associate degree",
+    "6" = "Bachelor's degree",
+    "7" = "Master's degree",
+    "8" = "Doctorate or professional",
+    "9" = "Other",
+    "10" = "Trade school",
+    "11" = "Technical certification"
+  ),
+  CPAL.DEMO.015 = c(
+    summarize = F,
+    "0" = "No",
+    "9" = "GED",
+    "10" = "Undergraduate or post-secondary",
+    "11" = "Graduate degree program",
+    "12" = "Non-degree credentialing program",
+    "13" = "Not listed"
+  ),
+  CPAL.FSTR.004.a = c(
+    summarize = T,
+    ""
+    
+  )
+)     
+
+summarize_subparts <- function(df, prefix, maps=response_maps) {
+  cols <- grep(paste0("^",prefix), names(df), value = TRUE)
+  response_map <- maps[[prefix]]
+  summarized <- df %>%
+    gather(key = "subpart", value = "response", starts_with(prefix)) %>%
+    mutate(subpart = str_extract(subpart, "\\d+$"),
+           mapped_value = ifelse(response == 1, response_map[subpart], NA_character_)) %>%
+    group_by(CPALID) %>%
+    summarize(!!prefix := list(mapped_value)) %>%
+    mutate_at(2, ~map(., ~na.omit(.))) 
+  df <- df %>%
+    left_join(summarized, by = "CPALID") %>%
+    select(-all_of(cols))
+  return(df)
+}
+
+df <- data %>%
+  summarize_subparts("CPAL.DEMO.007.2") %>% mutate(Education_Category = case_when(
+    CPAL.DEMO.014 %in% c("Less than high school", "Some high school") ~ "No high school degree",
+    CPAL.DEMO.014 %in% c("High school diploma or equivalent", "Some college") ~ "High school degree",
+    CPAL.DEMO.014 %in% c("Associate degree", "Bachelor's degree", "Master's degree", "Doctorate or professional", "Trade school", "Technical certification", "Other") ~ "Post-secondary degree or certification",
+  )) %>%
+  mutate(CPAL.DEMO.007.2 = case_when(
+    is.na(CPAL.DEMO.007.2) ~ NA,
+    lengths(CPAL.DEMO.007.2) > 1 ~ "Multiracial or other",
+    CPAL.DEMO.007.2 == "Other" ~ "Multiracial or other",
+    TRUE ~ as.character(CPAL.DEMO.007.2)
+  )) %>%
+  mutate(Annual2023Income = case_when(
+           Annual2023Income > 20 & Annual2023Income < 100 ~ Annual2023Income*1000,
+           Annual2023Income == Income2023W2Y & Annual2023Income < 1000 ~ Annual2023Income*52,
+           Annual2023Income == Income2023M2Y & Annual2023Income > 999 & Annual2023Income < 3000 ~ Annual2023Income*12,
+           TRUE ~ Annual2023Income
+         )) %>%
+  filter(Annual2023Income < 10000000, Annual2023Income > 1000) %>%
+  mutate(IncomeQuartile = case_when(
+    is.na(Annual2023Income) ~ NA,
+    TRUE ~ cut(
+      Annual2023Income,
+      breaks = c(-Inf, quantile(Annual2023Income, probs = c(0.25, 0.50, 0.75), na.rm = T), Inf),
+      labels = c(1,2,3,4),
+      include.lowest = T))) %>%
+  mutate(
+      ChildUnder6 = ifelse(!is.na(CPAL.CBCL.015) & CPAL.CBCL.015 %in% 1:6, 1, 0)
+  ) %>%  
+  mutate(`Income Bracket` = factor(case_when(
+      Annual2023Income < 15000 ~ "Less than $15,000",
+      Annual2023Income >= 15000 & Annual2023Income < 24999 ~ "$15,000 to $24,999",
+      Annual2023Income >= 25000 & Annual2023Income < 34999 ~ "$25,000 to $34,999",
+      Annual2023Income >= 35000 & Annual2023Income < 49999 ~ "$35,000 to $49,999",
+      Annual2023Income >= 50000 & Annual2023Income < 74999 ~ "$50,000 to $74,999",
+      Annual2023Income >= 75000 & Annual2023Income < 99999 ~ "$75,000 to $99,999",
+      Annual2023Income >= 100000 & Annual2023Income < 149999 ~ "$100,000 to $150,999",
+      Annual2023Income >= 150000 ~ "$150,000 and above"
+    ),
+    levels = c("Less than $15,000",
+               "$15,000 to $24,999",
+               "$25,000 to $34,999",
+               "$35,000 to $49,999",
+               "$50,000 to $74,999",
+               "$75,000 to $99,999",
+               "$100,000 to $150,999",
+               "$150,000 and above")
+  )) %>%
+  mutate(age_bucket = cut(age_yr, breaks = c(0, 9, 19, 29, 39, 49, 59, 69, 79, Inf), 
+                     labels = c("0-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80+")))
+
+
+
+# for (code in names(response_maps)) {
+#   if (response_maps[[code]]['summarize']) {
+#     df <- summarize_subparts(df, code)
+#   } else {
+#     df <- map_only(df, code)
+#   }
+# }
+
+
+```
+
+```{r generate_sample}
+
+# ## SAMPLE DF
+# 
+#   generate_sample_data <- function(column_map) {
+#     possible_values <- as.character(0:(length(column_map) - 2))
+#     sample(possible_values, 100, replace = TRUE)
+#   }
+#   
+#   df <- as.data.frame(lapply(response_maps, generate_sample_data))
+#   
+#   for(col in names(response_maps)) {
+#     map <- response_maps[[col]]
+#     df[[col]] <- map[as.numeric(df[[col]]) + 1] 
+#   }
+#   df$CPAL.DEMO.007.2 <- factor(df$CPAL.DEMO.007.2)
+#   
+#   df$Annual2023Income <- sample(20000:120000, 100, replace = TRUE)
+#   
+#   df$CPAL.POLICY.035 <- sample(0:1, 100, replace = TRUE)
+#   
+#   zip_codes <- c(75052, 75217, 75211, 75228, 75243, 75043, 75040, 75150, 75227, 75115, 75064)
+#   
+#   df$ZIP_Code <- as.factor(sample(zip_codes, nrow(df), replace = TRUE))
+#   
+#   df$age_yr <- sample(18:70, 100, replace = TRUE)
+#   
+#   df$CPAL.BEN.001 <- sample(c(1,0,-98), 100, replace = TRUE)
+#   
+#   for (i in 1:5) {
+#     condition <- df$CPAL.BEN.001 == 1
+#     df[[paste0("CPAL.BEN.001.a_", i)]] <- NA  # Initialize the new column with NAs
+#     df[[paste0("CPAL.BEN.001.a_", i)]][condition] <- sample(c(1, NA), sum(condition), replace = TRUE)
+#   }
+# 
+#   df$CPAL.BEN.001.b <- sample(c(1,0), 100, replace = TRUE)
+#   
+#   df$CPAL.JOB.015 <- sample(c(0,1,2,3,4), 100, replace = TRUE)
+#   
+#   for (i in c(1:5, 8:11, 13, 16)) {
+#     condition <- df$CPAL.JOB.015 == 1
+#     df[[paste0("CPAL.JOB.015.a_", i)]] <- NA  # Initialize the new column with NAs
+#     df[[paste0("CPAL.JOB.015.a_", i)]][condition] <- sample(c(1, NA), sum(condition), replace = TRUE)
+#   }  
+#   
+#   df$CPAL.JOB.008 <- sample(c(0,1,2,3,4,5,6), 100, replace = TRUE)
+#   
+#   df$POVERTYLine2023 <- sample(c(1,2,NA), 100, prob=c(.45,.45,.1), replace=TRUE)
+#   
+#   df$CPAL.EHQ.001 <- sample(c(0,1,2,3,4), 100, replace = TRUE)
+#   
+#   df$CPAL.EHQ.002 <- sample(c(0,1,2,3), 100, replace = TRUE)
+# 
+#   df$CPAL.FSTR.001 <- sample(c(0,1,2,3), 100, replace = TRUE)
+#   
+#   df$CPAL.FTAX.001 <- sample(c(0,1,-98), 100, prob=c(.49,.49,.02), replace=TRUE)
+#   
+#   df$CPAL.DEBT.007 <- sample(c(1,2,3,4), 100, replace = TRUE)
+#   
+#   df$CPAL.HOME.005 <- sample(c(0,1,2), 100, replace = TRUE)
+#   df$CPAL.HOME.006 <- sample(c(0,1,2), 100, replace = TRUE)
+# 
+#   df$CPAL.MH.009 <- sample(c(0,1,NA), 100, replace = TRUE)
+#   df$CPAL.MH.010 <- sample(c(0,1,NA), 100, replace = TRUE)
+#   
+#   df$CPAL.HEALTH.002 <- sample(c(2,1,-98), prob = c(.48,.48,.04), 100, replace = TRUE)
+#   df$CPAL.HEALTH.003.2 <- sample(c(2,1), 100, replace = TRUE)
+#   df$CPAL.HEALTH.004.2 <- sample(c(0,1), 100, replace = TRUE)
+# 
+# 
+# ##
+  
+demographics <- c(names(response_maps), "Annual2023Income", "ZIP_Code")
+
+
+```
+
+
+::::: {.shadecontent}
+
+::: grid
+
+::: g-col-6
+
+##### Distribution of Respondents by Race
+
+
+```{r racedist, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.DEMO.007.2)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x = 1.1, label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size = 8) +
+  labs(fill = "Race") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.text = element_text(size=14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+    )
+
+```
+
+
+:::
+
+::: g-col-6
+
+##### Income Distribution of Respondents (Under $200,000)
+
+
+```{r incomedist, dev = "png", dev.args=list(bg="transparent")}
+
+ggplot() +
+  geom_histogram(data = df %>% filter(Annual2023Income < 200000), aes(x = Annual2023Income, fill = palette_cpal_main[1]), binwidth = 5000, boundary = 0, alpha = 0.85) +
+  scale_x_continuous(
+    labels = scales::dollar_format(),
+    limits = c(0, 225000),
+    breaks = seq(0, 225000, by = 50000),
+    minor_breaks = seq(0, 225000, by = 10000) 
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title = element_blank(),
+    axis.text.x = element_text(size=16),
+    axis.text.y = element_text(size=16),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  )
+
+```
+
+
+:::
+
+::: g-col-6
+
+##### Median Income of Respondents by Race
+
+
+```{r raceinc, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  summarise(median_income = median(Annual2023Income, na.rm = TRUE)) %>%
+  ggplot(aes(x = median_income, y = CPAL.DEMO.007.2)) + 
+  geom_col(fill = palette_cpal_main[1], size = 4, alpha = 0.8, width = 0.7) +
+  scale_x_continuous(labels = scales::dollar_format(), limits = c(0, 70000)) +
+  scale_y_discrete(labels = function(x) {
+    return(stringr::str_wrap(x, width = 22))
+  }) +
+  theme_minimal() +
+  theme(
+    axis.title = element_blank(),
+    panel.grid.major.y = element_blank(),
+    legend.position = "none",
+    axis.text.x = element_text(size=14),
+    axis.text.y = element_text(size=14),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  )
+
+```
+
+
+:::
+
+::: g-col-6
+
+##### Age Distribution of Respondents
+
+
+```{r agedist, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  ggplot(aes(x = age_yr)) +
+    geom_histogram(binwidth = 2.5, alpha = 0.8, fill = palette_cpal_main[1]) +
+    scale_x_continuous(limits = c(0,80)) +
+    labs(x = "Age") + 
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      axis.title.y = element_blank(),
+      axis.title.x = element_text(size=18),
+      axis.text.x = element_text(size=16),
+      axis.text.y = element_text(size=16),
+      plot.background = element_rect(fill = "transparent", colour = NA),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      strip.background = element_rect(fill = "transparent", colour = NA)
+    )
+
+```
+
+
+:::
+
+::: g-col-6
+
+##### Respondent Distribution by Zip Code
+
+
+```{r zipdist, dev = "png", dev.args=list(bg="transparent")}
+
+
+zip_counts <- df %>%
+  count(CPAL.DEMO.001) %>%
+  mutate(GEOID = as.character(CPAL.DEMO.001))
+
+zctas_merged <- left_join(zctas_dallas, zip_counts, by = "GEOID") %>%
+  mutate(
+    n = case_when(
+      is.na(n) ~ 0,
+      TRUE ~ n
+  )) %>%
+  mutate(
+    per_capita = case_when(
+      estimate > 0 ~ n/estimate,
+      estimate == 0 ~ n/1000)
+  )
+
+# leaflet(zctas_merged) %>%
+#   addProviderTiles("CartoDB.Positron") %>%
+#   addPolygons(
+#     fillColor = ~colorNumeric("YlGn", per_capita)(per_capita),
+#     weight = 1,
+#     opacity = 1,
+#     color = "white",
+#     fillOpacity = 0.7,
+#     highlight = TRUE,
+#     label = ~as.character(GEOID),
+#     popup = paste0("ZIP: ", GEOID, "<br/>Per capita: ", formatted_per_capita, "<br/>Count: ", n)
+#   ) %>%
+#   addLegend(pal = colorNumeric("YlGn", zctas_merged$per_capita, n = 5), values = zctas_merged$per_capita, title = "Count")
+
+leaflet(zctas_merged) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~colorNumeric("YlGn", n)(n),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    fillOpacity = 0.7,
+    highlight = TRUE,
+    label = ~as.character(GEOID),
+    popup = ~paste0("ZIP: ", GEOID, "<br/>Per capita: ", round(per_capita*1000, digits = 2), "/1000<br/>Count: ", n)
+  ) %>%
+  addLegend(pal = colorNumeric("YlGn", zctas_merged$n, n = 5), values = zctas_merged$n, title = "Count", position = "bottomright", labFormat = labelFormat(transform = function(x) round(x)))
+
+```
+
+
+:::
+
+::: g-col-6
+
+##### Respondents by Number of Children Age 6 or Younger
+
+
+```{r child6, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  mutate(`Number of children age 6 or younger` = case_when(
+    is.na(CPAL.CBCL.015) ~ "None",
+    TRUE ~ as.character(CPAL.CBCL.015)
+  )) %>%
+  group_by(`Number of children age 6 or younger`) %>%
+  summarise(
+    `Median income` = scales::dollar(median(Annual2023Income, na.rm = TRUE)),
+    `Median respondent age` = paste0(round(median(`age_yr`, na.rm = TRUE), digits = 0), " yrs."),
+    n = n()
+  ) %>%
+  ungroup() %>%
+  datatable(options = list(paging = FALSE,
+                           searching = FALSE,                            
+                           info = FALSE),
+            rownames = FALSE)
+
+```
+
+
+:::
+
+:::
+
+:::::
+
+
+```{r mapping, output = FALSE}
+# df %>%
+#   mutate(housing_problems = case_when(
+#     
+#   ))
+```
+
+
+# Categories
+
+::: {.callout-note appearance="simple"}
+
+## Core Questions
+
+Starred <i class="bi bi-star"></i> questions are considered "core" insights.
+
+:::
+
+## Benefits and benefits delivery
+
+::: grid
+::: g-col-5
+### CPAL.JOB.015
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> Are you receiving any sort of public or employment benefits, such as Supplemental Nutrition Assistance Program (SNAP), Temporary Assistance for Needy Families (TANF), Social Security Income (SSI) or others?
+:::
+:::
+
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.JOB.015)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r benefits01, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.JOB.015)) %>%
+  mutate(CPAL.JOB.015 = case_when(
+    CPAL.JOB.015 == 1 ~ "Yes",
+    CPAL.JOB.015 == 0 ~ "No",
+    CPAL.JOB.015 == 2 ~ "Didn't qualify",
+    CPAL.JOB.015 == 3 ~ "Intend to apply",
+    CPAL.JOB.015 == 4 ~ "Applied and waiting for a decision"
+  )) %>%
+  group_by(CPAL.JOB.015) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.JOB.015)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(label = ifelse(prop > 0.05, scales::percent(prop * 100, scale = 1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size = 6) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Yes" = palette_cpal_main[1], 
+                               "No" = palette_cpal_main[2], 
+                               "Didn't qualify" = "#b0663e",
+                               "Intend to apply" = "#4c8a4a",
+                               "Applied and waiting for a decision" = palette_cpal_main[4]),
+                    breaks = c("Yes", "No", "Didn't qualify", "Intend to apply", "Applied and waiting for a decision")
+                    )
+
+```
+
+
+*Percent* of those receiving benefits who *receive* benefits for...
+
+
+```{r benefits1, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.JOB.015.a_")) %>% 
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1 & CPAL.JOB.015 == 1, na.rm = T)/sum(CPAL.JOB.015 == 1, na.rm = T))) %>% 
+  arrange(desc(percentage)) %>%
+  ggplot(aes(x = percentage, y = answer, fill = palette_cpal_main[1])) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.20, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = 1.1, 
+        size = 6, 
+        colour = "white") +
+    geom_text(aes(label = ifelse(percentage <= 0.20, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1, 
+        size = 6, 
+        colour = "grey") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_y_discrete(labels = c("CPAL.JOB.015.a_1" = "Health or medical services",
+                              "CPAL.JOB.015.a_2" = "Food",
+                              "CPAL.JOB.015.a_3" = "Income (i.e. TANF)",
+                              "CPAL.JOB.015.a_4" = "Disability (non-military)",
+                              "CPAL.JOB.015.a_5" = "Military benefits",
+                              "CPAL.JOB.015.a_8" = "Housing",
+                              "CPAL.JOB.015.a_9" = "Childcare",
+                              "CPAL.JOB.015.a_10" = "Other",
+                              "CPAL.JOB.015.a_11" = "Transportation",
+                              "CPAL.JOB.015.a_13" = "Clothing",
+                              "CPAL.JOB.015.a_16" = "Unemployment"
+                              ))
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.BEN.001.b
+
+> Do your food benefits make it possible to buy enough groceries each month?
+
+**Rate of response (all respondents):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.BEN.001.b)))/nrow(df), accuracy = 0.1)`
+
+**Rate of response (receives food benefits):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.BEN.001.b)))/nrow(df %>% filter(!is.na(CPAL.BEN.001.b))), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r benefits03, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.BEN.001.b)) %>%
+  mutate(CPAL.BEN.001.b = case_when(
+    CPAL.BEN.001.b == 1 ~ "Yes",
+    CPAL.BEN.001.b == 0 ~ "No",
+    CPAL.BEN.001.b == -98 ~ "Unsure",
+  )) %>%
+  group_by(CPAL.BEN.001.b) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.BEN.001.b)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.1, label = ifelse(prop > 0.05, scales::percent(prop * 100, scale = 1, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 16),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Yes" = palette_cpal_main[1], "No" = palette_cpal_main[2], "Unsure" = "#ababab"),
+                    breaks = c("Yes", "No", "Unsure"))
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.BEN.001
+
+> Have you tried to apply for a federal or local benefit in the last year, such as SNAP, WIC, Medicaid, or rental assistance?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.JOB.015)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r benefits02, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  mutate(CPAL.BEN.001 = case_when(
+    CPAL.BEN.001 == 1 ~ "Yes",
+    CPAL.BEN.001 == 0 ~ "No",
+    CPAL.BEN.001 == -98 ~ "Unsure",
+    is.na(CPAL.BEN.001) ~ "Unsure"
+  )) %>%
+  group_by(CPAL.BEN.001) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.BEN.001)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.15, label = ifelse(prop > 0.05, scales::percent(prop, scale = 100), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size = 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 16),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_fill_manual(values = c("Yes" = palette_cpal_main[1], "No" = palette_cpal_main[2], "Unsure" = "#ababab"),
+                    breaks = c("Yes", "No", "Unsure"))
+
+```
+
+
+*Percent* of those *applying* for benefits who found that...
+
+
+```{r benefits2, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.BEN.001.a_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1 & CPAL.BEN.001 == 1, na.rm = T)/sum(CPAL.BEN.001 == 1, na.rm = T))) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[1-3]$") ~ palette_cpal_main[1],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = 1.1, 
+          size = 8, 
+          colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1, 
+        size = 8, 
+        colour = "grey") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.BEN.001.a_1" = "The application was simple and easy to complete",
+                 "CPAL.BEN.001.a_2" = "I felt confident that I would receive help soon",
+                 "CPAL.BEN.001.a_3" = "I was able to access support in completing the application" ,
+                 "CPAL.BEN.001.a_4" = "The process was frustrating",
+                 "CPAL.BEN.001.a_5" = "It was hard to know what was needed to complete the application")
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+```
+
+:::
+
+:::
+
+## Employment and income
+
+::: grid
+::: g-col-5
+### CPAL.JOB.008
+
+> Current employment status
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.JOB.008)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r empl01, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.JOB.008)) %>%
+  mutate(CPAL.JOB.008 = case_when(
+    CPAL.JOB.008 == 1 ~ "Working (either full- or part-time)",
+    CPAL.JOB.008 == 2 ~ "Unemployed or laid off",
+    CPAL.JOB.008 == 3 ~ "Temporarily out of work or furloughed",
+    CPAL.JOB.008 == 4 ~ "Other",
+    CPAL.JOB.008 == 5 ~ "Stay-at-home parent (not seeking work)",
+    CPAL.JOB.008 == 6 ~ "Student (either working or not working)"
+  )) %>%
+  group_by(CPAL.JOB.008) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.JOB.008)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.05, label = ifelse(prop > 0.1, scales::percent(prop * 100, scale = 1, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size = 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Working (either full- or part-time)" = palette_cpal_main[1], 
+                               "Unemployed or laid off" = palette_cpal_main[2], 
+                               "Temporarily out of work or furloughed" = "#b0663e",
+                               "Student (either working or not working)" = "#4c8a4a",
+                               "Stay-at-home parent (not seeking work)" = palette_cpal_main[4],
+                               "Other" = "#ababab"),
+                    breaks = c("Working (either full- or part-time)",
+                               "Unemployed or laid off",
+                               "Temporarily out of work or furloughed", 
+                               "Stay-at-home parent (not seeking work)",
+                               "Student (either working or not working)",
+                               "Other")
+                    )
+
+```
+
+:::
+
+:::
+
+::: grid
+
+::: g-col-5
+### Annual2023Income
+
+> Reported income from last year
+
+**Rate of Response:** `r round((nrow(df %>% filter(!is.na(Annual2023Income)))/nrow(df))*100, 2)`
+
+**Median Income:** `r scales::dollar_format()(median(df$Annual2023Income, na.rm = TRUE))`
+
+**Maximum Income:** `r scales::dollar_format()(max(df$Annual2023Income, na.rm = TRUE))`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+The Dallas County median income in 2021 was **`r scales::dollar(dallas_county_acs %>% pull(B19013_001))`**, so *this survey sample is lower-income* than Dallas County as a whole.
+
+
+```{r empl02, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(Annual2023Income), Annual2023Income < 200000, Annual2023Income > 2000) %>%
+  ggplot(aes(x = factor(1), y = Annual2023Income)) + 
+  geom_violin(trim=FALSE, fill=palette_cpal_main[1], color=palette_cpal_main[1]) + 
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) + 
+  theme_minimal() +
+  theme(axis.title.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y = element_text(size=16)) +
+  scale_y_continuous(labels = scales::dollar_format())
+
+```
+
+
+:::
+
+:::
+
+::: {.column-margin}
+
+&nbsp;
+
+&nbsp;
+
+&nbsp;
+
+&nbsp;
+
+&nbsp;
+
+&nbsp;
+
+`r paste0(nrow(df %>% filter(Annual2023Income > 199999.99)), " respondents reporting income above $200,000 not visualized. Maximum reported income is ", scales::dollar(max(df$Annual2023Income, na.rm = T)))`
+:::
+
+
+::: grid
+
+::: g-col-5
+### POVERTYLine2023
+
+> Above or below poverty line
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(POVERTYLine2023)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+The Dallas County poverty rate in 2021 was **`r scales::percent(dallas_county_acs %>% pull(povertyRate))`**, so *this survey sample is lower-income* than Dallas County as a whole.
+
+
+```{r empl03, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(POVERTYLine2023)) %>%
+  mutate(POVERTYLine2023 = case_when(
+    POVERTYLine2023 == 1 ~ "Under the poverty line",
+    POVERTYLine2023 == 2 ~ "Over the poverty line",
+    TRUE ~ as.character(POVERTYLine2023)
+  )) %>%
+  count(POVERTYLine2023) %>%
+  mutate(prop = n / sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = POVERTYLine2023)) +
+  geom_bar(stat = "identity", width = 0.4) +
+  geom_text(aes(label = scales::percent(prop, accuracy = 0.1), y = prop, size = 2), color = "white", position = position_stack(vjust = 0.5)) +
+  geom_text(aes(label = POVERTYLine2023, y = prop, x = 1.3, size = 2), color = "dimgrey", position = position_stack(vjust = 0.5)) +
+  labs(title = NULL,
+       x = NULL,
+       y = NULL) +
+  coord_flip() +
+  theme_minimal() +
+  theme(
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "none"
+  ) +
+  scale_size_continuous(range = c(4, 6))
+
+# df %>%
+#   filter(!is.na(POVERTYLine2023), !is.na(CPAL.DEMO.007.2)) %>%
+#   count(POVERTYLine2023, CPAL.DEMO.007.2) %>%
+#   group_by(CPAL.DEMO.007.2) %>%
+#   mutate(prop = n / sum(n)) %>%
+#   ggplot(aes(x = CPAL.DEMO.007.2, y = prop, fill = interaction(CPAL.DEMO.007.2, POVERTYLine2023))) +
+#   geom_bar(stat = "identity", position = "stack", width = 0.8) +
+#   geom_text(data = . %>% filter(POVERTYLine2023 == "Under"),
+#             aes(label = scales::percent(prop), y = prop),
+#             color = "white", size = 4, 
+#             # position = position_stack(vjust = 0.5)
+#             ) +
+#   scale_fill_manual(values = c(scales::alpha(palette_cpal_main[c(1:4,6:9)], 0.5), palette_cpal_main[c(1:4,6:9)]), 
+#                     # name = "Race",
+#                     # breaks = unique(interaction(df$CPAL.DEMO.007.2, df$POVERTYLine2023)),
+#                     labels = rep(unique(df$CPAL.DEMO.007.2), 2)) + 
+#   labs(title = NULL, x = NULL, y = NULL) +
+#   scale_y_continuous(labels = scales::percent) +
+#   theme_minimal() +
+#   theme(
+#     axis.text = element_blank(),
+#     axis.title = element_blank(),
+#     axis.ticks = element_blank(),
+#     panel.grid = element_blank()
+#   )
+
+```
+
+
+:::
+
+::: g-col-5
+### CPAL.EHQ.001
+
+> Which of the following best describes what has happened to your family income in the past month?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.EHQ.001)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+**`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.001), CPAL.EHQ.001 < 2))/nrow(df %>% filter(is.numeric(CPAL.EHQ.001))), accuracy = 0.1)`** of respondents report a *decrease* in monthly income, while only **`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.001), CPAL.EHQ.001 > 2))/nrow(df %>% filter(is.numeric(CPAL.EHQ.001))), accuracy = 0.1)`** report an *increase*.
+
+
+```{r empl04, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  mutate(CPAL.EHQ.001 = factor(
+    case_when(
+      CPAL.EHQ.001 == 0 ~ "Has decreased very much",
+      CPAL.EHQ.001 == 1 ~ "Has decreased somewhat",
+      CPAL.EHQ.001 == 2 ~ "Has stayed the same",
+      CPAL.EHQ.001 == 3 ~ "Has increased somewhat",
+      CPAL.EHQ.001 == 4 ~ "Has increased very much",
+      TRUE ~ NA
+    ),
+    levels = c("Has decreased very much", 
+               "Has decreased somewhat", 
+               "Has stayed the same", 
+               "Has increased somewhat", 
+               "Has increased very much")
+  )) %>%
+  filter(!is.na(CPAL.EHQ.001)) %>%
+  group_by(CPAL.EHQ.001) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = prop, y = CPAL.EHQ.001, fill = CPAL.EHQ.001)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = ifelse(prop > 0.05, scales::percent(prop, scale = 100), "")), 
+            position = position_dodge(width=0.9), hjust = 1.1, size = 8, colour = "white") +
+  geom_text(aes(label = ifelse(prop < 0.05, scales::percent(prop, scale = 100), "")), 
+          position = position_dodge(width=0.9), hjust = -0.1, size = 8, colour = "grey") +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 14),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_fill_manual(values = colorRampPalette(c(palette_cpal_main[2], "#ababab", palette_cpal_main[1]))(5),
+                    breaks = c("Has decreased very much",
+                               "Has decreased somewhat",
+                               "Has stayed the same", 
+                               "Has increased somewhat",
+                               "Has increased very much")
+                    ) +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), expand = expansion(mult = c(0.1, 0)))
+
+```
+
+
+#### **`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.001), CPAL.EHQ.001 < 2, !is.na(CPAL.CBCL.015), CPAL.CBCL.015 > 0))/nrow(df %>% filter(!is.na(CPAL.CBCL.015), CPAL.CBCL.015 > 0, is.numeric(CPAL.EHQ.001))), accuracy = 0.1)`** of respondents with at least one child aged *6 or younger* report a *decrease* in monthly income, compared to **`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.001), CPAL.EHQ.001 > 2, !is.na(CPAL.CBCL.015), CPAL.CBCL.015 > 0))/nrow(df %>% filter(!is.na(CPAL.CBCL.015), CPAL.CBCL.015 > 0, is.numeric(CPAL.EHQ.001))), accuracy = 0.1)`** reporting an *increase*.
+
+:::
+
+::: g-col-5
+### CPAL.EHQ.002
+
+> Which of the following best describes your family financially at this time?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.EHQ.002)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+**`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.002), CPAL.EHQ.002 > 0))/nrow(df), accuracy = 0.1)`** of respondents report at least some family *financial problems*.
+
+
+```{r empl05, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.EHQ.002)) %>%
+  mutate(CPAL.EHQ.002 = factor(
+    case_when(
+      CPAL.EHQ.002 == 0 ~ "No problems",
+      CPAL.EHQ.002 == 1 ~ "Minor problems",
+      CPAL.EHQ.002 == 2 ~ "Major problems",
+      CPAL.EHQ.002 == 3 ~ "Extreme problems",
+    ),
+    levels = c("No problems", "Minor problems", "Major problems", "Extreme problems")
+  )) %>%
+  group_by(CPAL.EHQ.002) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = prop, y = CPAL.EHQ.002, fill = CPAL.EHQ.002)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = ifelse(prop > 0.1, scales::percent(prop, scale = 100), "")), 
+            position = position_dodge(width=0.9), 
+            hjust = 1.1, 
+            size = 8, 
+            colour = "white") +
+  geom_text(aes(label = ifelse(prop <= 0.1, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1,
+        size = 8, 
+        colour = "grey") +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 14),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_fill_manual(values = colorRampPalette(c("#ABABAB", palette_cpal_main[2], "#592523"))(5),
+                    c("No problems", "Minor problems", "Major problems", "Extreme problems")) +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), expand = expansion(mult = c(0.1, 0)))
+
+
+```
+
+
+*White respondents* are least likely to report any financial hardships.
+
+
+```{r empl05_2, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.EHQ.002), CPAL.DEMO.007.2 %in% c(
+    "Hispanic, Latine, or Latin origin",
+    "Black or African American",
+    "White"
+  )) %>%
+  mutate(CPAL.EHQ.002 = factor(
+    case_when(
+      CPAL.EHQ.002 == 0 ~ 0,
+      CPAL.EHQ.002 > 0 ~ 1
+    )
+  )) %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  summarize(no = sum(CPAL.EHQ.002 == 0)/n(), yes = sum(CPAL.EHQ.002 == 1)/n()) %>%
+  gather(key = "financial_problems", value = "prop", -CPAL.DEMO.007.2) %>%
+  ggplot(aes(x = CPAL.DEMO.007.2, y = prop, fill = palette_cpal_main[1], alpha = financial_problems)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  geom_text(aes(label = ifelse(financial_problems == "yes", scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+          position = position_identity(), hjust = 1.1, size = 8, colour = "white") +
+  coord_flip() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+
+
+
+```
+
+
+**`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.002), CPAL.EHQ.002 > 0, !is.na(POVERTYLine2023), as.numeric(POVERTYLine2023) == 1))/nrow(df %>% filter(is.numeric(CPAL.EHQ.002), !is.na(POVERTYLine2023), as.numeric(POVERTYLine2023) == 1)), accuracy = 0.1)`** of those *under* the poverty line report *family financial problems*, as do **`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.EHQ.002), CPAL.EHQ.002 > 0, !is.na(POVERTYLine2023), as.numeric(POVERTYLine2023) == 2))/nrow(df %>% filter(is.numeric(CPAL.EHQ.002), !is.na(POVERTYLine2023), as.numeric(POVERTYLine2023) == 2)), accuracy = 0.1)`** of those *above* the poverty line.**
+
+
+```{r empl05_3, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.EHQ.002), !is.na(POVERTYLine2023)) %>%
+  mutate(
+    CPAL.EHQ.002 = factor(
+      case_when(
+        CPAL.EHQ.002 == 0 ~ 0,
+        CPAL.EHQ.002 > 0 ~ 1)),
+    POVERTYLine2023 = as.factor(POVERTYLine2023)
+  ) %>%
+  group_by(POVERTYLine2023) %>%
+  summarize(no = sum(CPAL.EHQ.002 == 0)/n(), yes = sum(CPAL.EHQ.002 == 1)/n()) %>%
+  mutate(POVERTYLine2023 = recode(POVERTYLine2023, `1` = "Under the poverty line, reporting problems", `2` = "Over the poverty line, reporting problems")) %>%
+  gather(key = "financial_problems", value = "prop", -POVERTYLine2023) %>%
+  ggplot(aes(x = POVERTYLine2023, y = prop, fill = POVERTYLine2023, alpha = financial_problems)) +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  geom_text(aes(label = ifelse(financial_problems == "yes", scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+          position = position_identity(), 
+          hjust = 1.1, 
+          size = 8, 
+          colour = "white") +
+  coord_flip() +
+  theme(
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 12),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_color_manual(values = c("Over the poverty line, reporting problems" = palette_cpal_main[1], 
+                                "Under the poverty line, reporting problems" = palette_cpal_main[2]),
+                     breaks = c(
+                       "Over the poverty line, reporting problems",
+                       "Under the poverty line, reporting problems"
+                     )) +
+  scale_alpha_manual(values = c(0.2, 1))
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.FSTR.001
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> In the past month, how hard has it been for your family to pay for the very basics like food, housing, medical care, and heating?
+:::
+:::
+
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.FSTR.001)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+**`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.FSTR.001), CPAL.FSTR.001 > 0))/nrow(df), accuracy = 0.1)`** of respondents say paying for *basics* is *difficult*.
+
+**`r scales::percent(1 - nrow(df %>% filter(is.numeric(CPAL.FSTR.001), CPAL.FSTR.001 > 0, POVERTYLine2023 == 1))/nrow(df %>% filter(is.numeric(CPAL.FSTR.001), CPAL.FSTR.001 > 0)), accuracy = 0.1)`** of respondents who report difficulty paying for *basics* are *over* the poverty line.
+
+
+
+```{r empl06, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.FSTR.001)) %>%
+  mutate(CPAL.FSTR.001 = factor(
+    case_when(
+      CPAL.FSTR.001 == 0 ~ "Not very hard",
+      CPAL.FSTR.001 == 1 ~ "Somewhat hard",
+      CPAL.FSTR.001 == 2 ~ "Hard",
+      CPAL.FSTR.001 == 3 ~ "Very hard",
+    ),
+    levels = c("Not very hard", "Somewhat hard", "Hard", "Very hard")
+  )) %>%
+  group_by(CPAL.FSTR.001) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = prop, y = CPAL.FSTR.001, fill = CPAL.FSTR.001)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = ifelse(prop > 0.10, scales::percent(prop, scale = 100), "")), 
+            position = position_dodge(width=0.9), 
+            hjust = 1.1, 
+            size = 8, 
+            colour = "white") +
+  geom_text(aes(label = ifelse(prop <= 0.10, scales::percent(prop, scale = 100), "")), 
+            position = position_dodge(width=0.9), 
+            hjust = -0.1, 
+            size = 8, 
+            colour = "grey") +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 16),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_fill_manual(values = colorRampPalette(c("#ABABAB", palette_cpal_main[2], "#592523"))(5),
+                    c("Not very hard", "Somewhat hard", "Hard", "Very hard")) +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), expand = expansion(mult = c(0.1, 0)))
+
+```
+
+
+
+#### **`r scales::percent(nrow(df %>% filter(is.numeric(CPAL.FSTR.001), CPAL.FSTR.001 > 0, !is.na(CPAL.CBCL.015)))/nrow(df %>% filter(!is.na(CPAL.CBCL.015))), accuracy = 0.1)`** of respondents with at least one child *6 years old or younger* report *difficulty paying for basics*.
+
+
+
+```{r difficultypanel}
+
+df %>%
+  filter(Annual2023Income < 10000000, !is.na(CPAL.FSTR.001)) %>%
+  mutate(CPAL.FSTR.001 = factor(
+    case_when(
+      CPAL.FSTR.001 == 0 ~ "Not very hard",
+      CPAL.FSTR.001 == 1 ~ "Somewhat hard",
+      CPAL.FSTR.001 == 2 ~ "Hard",
+      CPAL.FSTR.001 == 3 ~ "Very hard",
+    ),
+    levels = c("Not very hard", "Somewhat hard", "Hard", "Very hard")
+  )) %>%
+  group_by(CPAL.FSTR.001) %>%
+  summarize(`Median income` = scales::dollar(median(Annual2023Income, na.rm = TRUE)),
+            `Median respondent age` = paste0(as.character(round(median(age_yr, na.rm = TRUE)), digits = 2), " yrs."),
+            `Pct. with children under 6` = scales::percent(mean(ChildUnder6))) %>%
+  datatable(options = list(paging = FALSE,
+                           searching = FALSE,
+                           info = FALSE
+                           ),
+            rownames = FALSE)
+```
+
+
+&nbsp;
+
+
+```{r difficultymap}
+
+basics_df <- df %>%
+  filter(!is.na(CPAL.FSTR.001)) %>%
+  group_by(CPAL.DEMO.001) %>%
+  summarize(pct = sum(CPAL.FSTR.001 > 0, na.rm = TRUE) / n(),
+            n = n(), 
+            n_true = sum(CPAL.FSTR.001 > 0, na.rm = TRUE),
+            .groups = 'drop') %>%
+  mutate(GEOID = as.character(CPAL.DEMO.001)) %>%
+  left_join(zctas_dallas, by = "GEOID") %>%
+  mutate(
+    per_capita = case_when(
+      estimate > 0 ~ n/estimate,
+      TRUE ~ 0)
+  ) %>%
+  filter(!is.na(NAME)) %>%
+  st_as_sf()
+
+leaflet(basics_df) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~colorNumeric("Reds", pct)(pct),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    fillOpacity = 0.7,
+    highlight = TRUE,
+    label = ~as.character(GEOID),
+    popup = ~paste0("ZIP: ", GEOID, 
+                    "<br/>Percent struggling: ", scales::percent(pct, accuracy = 0.1),
+                    "<br/>Count: ", n, 
+                    "<br/>Per capita: ", round(per_capita*1000, digits = 2), "/1000"
+                    )
+  ) %>%
+  addLegend(
+    pal = colorNumeric("Reds", basics_df$pct),
+    values = basics_df$pct,
+    labels = scales::percent(basics_df$pct, accuracy = 0.1), 
+    title = "Percent who report <br/>paying for basics is difficult")
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.FTAX.001
+
+> Did you file your taxes in 2023 (for the income year 2022)?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.FTAX.001)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r taxes, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.FTAX.001)) %>%
+  mutate(CPAL.FTAX.001 = case_when(
+    CPAL.FTAX.001 == 1 ~ "Yes",
+    CPAL.FTAX.001 == 0 ~ "No",
+    CPAL.FTAX.001 == -97 ~ "Prefer not to answer"
+  )) %>%
+  group_by(CPAL.FTAX.001) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.FTAX.001)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(label = ifelse(prop > 0.10, scales::percent(prop * 100, scale = 1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Yes" = palette_cpal_main[1], "No" = palette_cpal_main[2], "Prefer not to answer" = "#ababab"),
+                    breaks = c("Yes", "No", "Prefer not to answer"))
+
+
+df %>% 
+  filter(rowSums(is.na(select(., starts_with("CPAL.FTAX.001.b_")))) != length(select(., starts_with("CPAL.FTAX.001.b_")))) %>%
+  gather(key = "answer", value = "value", starts_with("CPAL.FTAX.001.b_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1 & CPAL.FTAX.001 == 1, na.rm = T)/sum(CPAL.FTAX.001 == 1, na.rm = T))) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[7]$") ~ palette_cpal_main[1],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = 1.1, 
+          size = 8, 
+          colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1, 
+        size = 8, 
+        colour = "grey") +
+  labs(title = "Tax filers who found that...") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_text(size = 14),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.FTAX.001.b_1" = "I couldn't find the right forms",
+                 "CPAL.FTAX.001.b_2" = "I found it difficult to complete the right forms",
+                 "CPAL.FTAX.001.b_3" = "I was confused on where to begin" ,
+                 "CPAL.FTAX.001.b_4" = "I had trouble finding time",
+                 "CPAL.FTAX.001.b_5" = "I didn't understand how to file",
+                 "CPAL.FTAX.001.b_6" = "I needed help but didn't know where to find it",
+                 "CPAL.FTAX.001.b_7" = "I didn't have any challenges",
+                 "CPAL.FTAX.001.b_8" = "I experienced a challenge not listed")
+    return(stringr::str_wrap(recodes[x], width = 40))
+  })
+
+
+df %>% 
+  filter(rowSums(is.na(select(., starts_with("CPAL.FTAX.001.c_")))) != length(select(., starts_with("CPAL.FTAX.001.c_"))))   %>%
+  gather(key = "answer", value = "value", starts_with("CPAL.FTAX.001.c_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1 & CPAL.FTAX.001 == 0, na.rm = T)/sum(CPAL.FTAX.001 == 0, na.rm = T))) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[7]$") ~ palette_cpal_main[2],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = 1.1, 
+          size = 8, 
+          colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.4, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), 
+        hjust = -0.1, 
+        size = 8, 
+        colour = "grey") +
+  labs(title = stringr::str_wrap("Respondents who didn't do their taxes because...", width = 40)) +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_text(size = 14),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.FTAX.001.c_1" = "I don't understand what forms I need",
+                 "CPAL.FTAX.001.c_2" = "I am confused on where to begin",
+                 "CPAL.FTAX.001.c_3" = "I don't have time" ,
+                 "CPAL.FTAX.001.c_4" = "I don't understand how to file",
+                 "CPAL.FTAX.001.c_5" = "I need help and I don't know where to find it",
+                 "CPAL.FTAX.001.c_6" = "I don't think I make enough to file",
+                 "CPAL.FTAX.001.c_7" = "I experienced a challenge not listed")
+    return(stringr::str_wrap(recodes[x], width = 35))
+  })
+
+
+```
+
+
+:::
+:::
+
+## Healthcare and childcare
+
+::: grid
+
+::: g-col-5
+### CPAL.HEALTH.001.a
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> Which of the following best represents your health insurance coverage?
+:::
+:::
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(rowSums(is.na(.[grepl("^CPAL.POLICY.016", names(.))])) < ncol(.)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+
+```{r healthcare001, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.HEALTH.001.a")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "10$") ~ palette_cpal_main[2],
+      stringr::str_detect(answer, "997$|998$|999$") ~ palette_cpal_main[5],
+      TRUE ~ palette_cpal_main[1]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.25, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.25, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), hjust = -0.1, size = 7, colour = "grey") +
+scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.HEALTH.001.a_1" = "Insurance through current or former employer",
+                 "CPAL.HEALTH.001.a_2" = "Self-pay",
+                 "CPAL.HEALTH.001.a_3" = "Medicare" ,
+                 "CPAL.HEALTH.001.a_4" = "Medicaid",
+                 "CPAL.HEALTH.001.a_5" = "TRICARE",
+                 "CPAL.HEALTH.001.a_6" = "Enrolled for VA healthcare",
+                 "CPAL.HEALTH.001.a_7" = "Indian Health Service",
+                 "CPAL.HEALTH.001.a_8" = "Other",         
+                 "CPAL.HEALTH.001.a_10" = "Not covered",
+                 "CPAL.HEALTH.001.a_997" = "Do not wish to disclose",
+                 "CPAL.HEALTH.001.a_998" = "Unsure")
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+```
+
+
+:::
+
+::: g-col-5
+### CPAL.HEALTH.002
+
+> Are your children that are between 0 and 5 years of age covered by any kind of health insurance?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.HEALTH.002)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r care02, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.HEALTH.002), CPAL.HEALTH.002 != -97) %>%
+  mutate(CPAL.HEALTH.002 = factor(
+    case_when(
+      CPAL.HEALTH.002 == 1 ~ "Covered",
+      CPAL.HEALTH.002 == 2 ~ "Not covered",
+      CPAL.HEALTH.002 == -98 ~ "I don't know",
+      TRUE ~ NA
+    ),
+    levels = c("Covered", 
+               "Not covered",
+               "I don't know")
+  )) %>%
+  filter(!is.na(CPAL.HEALTH.002)) %>%
+  group_by(CPAL.HEALTH.002) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.HEALTH.002)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Covered" = palette_cpal_main[1], "Not covered" = palette_cpal_main[2], "I don't know" = "#ababab"),
+                    breaks = c("Covered", "Not covered", "I don't know"))
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.HEALTH.003.2
+
+> At any time in the last month, did you DELAY getting medical care (including physical or mental health visits)?
+
+**Rate of response (if applicable):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.HEALTH.003.2)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r care00, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.HEALTH.004.2), CPAL.HEALTH.003.2 != -97) %>%
+  mutate(CPAL.HEALTH.003.2 = factor(
+    case_when(
+      CPAL.HEALTH.003.2 == 1 ~ "Yes",
+      CPAL.HEALTH.003.2 == 0 ~ "No",
+      CPAL.HEALTH.003.2 == -98 ~ "I don't know"
+    ),
+    levels = c("Yes", 
+               "No",
+               "I don't know"
+               )
+  )) %>%
+  group_by(CPAL.HEALTH.003.2) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.HEALTH.003.2)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.25,label = ifelse(prop > 0.05, scales::percent(prop, scale = 100), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size=7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c(palette_cpal_main[1], palette_cpal_main[2], "#ababab"),
+                    breaks = c("Yes",
+                               "No",
+                               "I don't know"
+                               )
+                    )
+```
+
+:::
+
+::: g-col-5
+### CPAL.POLICY.035
+
+> Are you currently looking for childcare?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.POLICY.035)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r care01, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.POLICY.035)) %>%
+  mutate(CPAL.POLICY.035 = factor(
+    case_when(
+      CPAL.POLICY.035 == 1 ~ "Yes",
+      CPAL.POLICY.035 == 0 ~ "No",
+    ),
+    levels = c("Yes", 
+               "No")
+  )) %>%
+  group_by(CPAL.POLICY.035) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.POLICY.035)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x = 1.2, label = ifelse(prop > 0.05, scales::percent(prop * 100, scale = 1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Yes" = palette_cpal_main[1], "No" = palette_cpal_main[2]),
+                    breaks = c("Yes", "No"))
+
+```
+
+```{r care01_2, dev = "png", dev.args=list(bg="transparent")}
+df %>%
+  filter(!is.na(CPAL.POLICY.035), CPAL.POLICY.035 != -99, !is.na(Annual2023Income)) %>%
+  mutate(CPAL.POLICY.035 = factor(
+    CPAL.POLICY.035,
+  levels = c(0, 
+             1)
+  )) %>%
+  mutate(`Income Bracket` = factor(case_when(
+      Annual2023Income < 15000 ~ "Less than $15,000",
+      Annual2023Income >= 15000 & Annual2023Income < 24999 ~ "$15,000 to $24,999",
+      Annual2023Income >= 25000 & Annual2023Income < 34999 ~ "$25,000 to $34,999",
+      Annual2023Income >= 35000 & Annual2023Income < 49999 ~ "$35,000 to $49,999",
+      Annual2023Income >= 50000 & Annual2023Income < 74999 ~ "$50,000 to $74,999",
+      Annual2023Income >= 75000 & Annual2023Income < 99999 ~ "$75,000 to $99,999",
+      Annual2023Income >= 100000 & Annual2023Income < 149999 ~ "$100,000 to $150,999",
+      Annual2023Income >= 150000 ~ "$150,000 and above"
+    ),
+    levels = c("Less than $15,000",
+               "$15,000 to $24,999",
+               "$25,000 to $34,999",
+               "$35,000 to $49,999",
+               "$50,000 to $74,999",
+               "$75,000 to $99,999",
+               "$100,000 to $150,999",
+               "$150,000 and above")
+  )) %>%
+  group_by(`Income Bracket`) %>%
+  summarize(`Not looking` = sum(CPAL.POLICY.035 == 1)/n(), `Looking` = sum(CPAL.POLICY.035 == 0)/n()) %>%
+  gather(key = "childcare", value = "prop", -`Income Bracket`) %>%
+  ggplot(aes(x = `Income Bracket`, y = prop, fill = `Income Bracket`, alpha = childcare)) +
+  geom_text(aes(label = ifelse(childcare == "Not looking", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+        position = position_stack(), hjust = -0.1, size = 8, colour = "grey") +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  coord_flip() +
+  labs(title = "Looking for childcare by income") +
+  theme(
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+```
+
+:::
+
+::: g-col-5
+### CPAL.POLICY.037
+
+> Have you experienced disruptions to your childcare in the past month?
+
+**Rate of response (if applicable):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.POLICY.037), CPAL.POLICY.037 != -99))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r care001, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.POLICY.037), CPAL.POLICY.037 != -99) %>%
+  mutate(CPAL.POLICY.037 = factor(
+    case_when(
+      CPAL.POLICY.037 == 0 ~ "No disruptions",
+      CPAL.POLICY.037 == 1 ~ "Disruptions",
+    ),
+    levels = c("No disruptions", 
+               "Disruptions")
+  )) %>%
+  group_by(CPAL.POLICY.037) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+    ggplot(aes(x = "", y = prop, fill = CPAL.POLICY.037)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x = 1.15, label = ifelse(prop > 0.05, scales::percent(prop * 100, scale = 1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("No disruptions" = palette_cpal_main[1], "Disruptions" = palette_cpal_main[2]),
+                    breaks = c("Disruptions", "No disruptions"))
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.POLICY.016
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> Currently, which of the following types of childcare do you use for your child(ren) under age 6 for at least 5 hours per week?
+:::
+:::
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(rowSums(is.na(.[grepl("^CPAL.POLICY.016", names(.))])) < ncol(.)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+
+```{r childcare001, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.POLICY.016")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[8:999]$") ~ palette_cpal_main[2],
+      TRUE ~ palette_cpal_main[1]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), hjust = -0.1, size = 7, colour = "grey") +
+scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14),
+    panel.grid.major.y = element_blank()
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.POLICY.016_1" = "Daycare",
+                 "CPAL.POLICY.016_2" = "Paid family, friend, or neighbor",
+                 "CPAL.POLICY.016_3" = "Unpaid family, friend, or neighbor" ,
+                 "CPAL.POLICY.016_4" = "Private pre-K",
+                 "CPAL.POLICY.016_5" = "Public pre-K",
+                 "CPAL.POLICY.016_6" = "HeadStart or Early Head Start",
+                 "CPAL.POLICY.016_7" = "Faith-based nursery",
+                 "CPAL.POLICY.016_8" = "None of these",
+                 "CPAL.POLICY.016_998" = "Unsure",
+                 "CPAL.POLICY.016_999" = "None of these")
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+```
+
+
+:::
+
+::: g-col-5
+### CPAL.HEALTH.002
+
+> Have you missed a well baby check up in the past month?
+
+**Rate of response (if applicable):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.HEALTH.004.2), CPAL.HEALTH.004.2 != -99))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r care03, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.HEALTH.004.2), CPAL.HEALTH.004.2 != -99, CPAL.HEALTH.004.2 != -97) %>%
+  mutate(CPAL.HEALTH.004.2 = factor(
+    case_when(
+      CPAL.HEALTH.004.2 == 1 ~ "Have missed",
+      CPAL.HEALTH.004.2 == 0 ~ "Have not missed",
+    ),
+    levels = c("Have missed", 
+               "Have not missed"
+               )
+  )) %>%
+  group_by(CPAL.HEALTH.004.2) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.HEALTH.004.2)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.25,label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Have not missed" = palette_cpal_main[1], "Have missed" = palette_cpal_main[2]),
+                    breaks = c("Have missed", "Have not missed"))
+
+```
+
+:::
+:::
+
+
+## Housing and home conditions
+
+::: grid
+::: g-col-5
+### CPAL.DEBT.007
+
+> Please describe your housing status
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.DEBT.007)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r home01, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.DEBT.007)) %>%
+  mutate(CPAL.DEBT.007 = factor(
+    case_when(
+      CPAL.DEBT.007 == 1 ~ "I rent the home I live in",
+      CPAL.DEBT.007 == 2 ~ "I own the home I live in",
+      CPAL.DEBT.007 == 3 ~ "Currently unhoused/homeless",
+      CPAL.DEBT.007 == 4 ~ "Other"),
+    levels = c("I rent the home I live in", "I own the home I live in", "Currently unhoused/homeless", "Other")
+  )) %>%
+  group_by(CPAL.DEBT.007) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.DEBT.007)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.10,label = ifelse(prop > 0.05, scales::percent(prop * 100, scale = 1), "")), 
+            position = position_stack(vjust = 0.6), colour = "white", size = 7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) 
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.DEMO.011
+
+> What are the living arrangements for children in your household under the age of 6 years?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(rowSums(is.na(.[grepl("^CPAL.DEMO.011", names(.))])) < ncol(.)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+
+
+```{r home06, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.DEMO.011_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[999]$") ~ palette_cpal_main[1],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = -0.1,
+          size = 7, 
+          colour = "grey") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14),
+    panel.grid.major.y = element_blank(),
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.DEMO.011_1" = "Two parents",
+                 "CPAL.DEMO.011_2" = "One parent",
+                 "CPAL.DEMO.011_3" = "Other children/siblings older than 6" ,
+                 "CPAL.DEMO.011_4" = "Adult relatives",
+                 "CPAL.DEMO.011_5" = "Adult non-relatives",
+                 "CPAL.DEMO.011_6" = "Other")
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+over_under_50k_two_parents <- df %>%
+  replace_na(list(`CPAL.DEMO.011_1` = 0)) %>%
+  group_by(`Over/Under 50k`) %>%
+  summarise(two_parent_percentage = mean(`CPAL.DEMO.011_1` == 1, na.rm = TRUE) )
+
+```
+
+
+#### `r scales::percent(pull(over_under_50k_two_parents[1,2]), accuracy = 0.1)` of respondents with income above $50,000 report a two-parent living arrangement, compared to only `r scales::percent(pull(over_under_50k_two_parents[2,2]), accuracy = 0.1)` of respondents with an income below $50,000.
+
+
+```{r home06_heatmap, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  gather(key = "answer", value = "value", starts_with("CPAL.DEMO.011_")) %>%
+  group_by(answer, `Income Bracket`) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = TRUE)/n())) %>%
+  ggplot(aes(x = `Income Bracket`, y = answer, fill = percentage)) +
+  geom_tile() +
+  scale_fill_gradient(low = scales::alpha(palette_cpal_main[2], 0), high = scales::alpha(palette_cpal_main[2], 1), labels = scales::percent_format()) +
+  labs(title = "Heatmap by Income Bracket") +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.DEMO.011_1" = "Two parents",
+                 "CPAL.DEMO.011_2" = "One parent",
+                 "CPAL.DEMO.011_3" = "Other children/siblings older than 6",
+                 "CPAL.DEMO.011_4" = "Adult relatives",
+                 "CPAL.DEMO.011_5" = "Adult non-relatives",
+                 "CPAL.DEMO.011_6" = "Other")
+    return(stringr::str_wrap(recodes[x], width = 25))
+  }) +
+  theme_minimal() +
+  theme(
+    title = element_text(size = 14),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid = element_blank(),
+  )
+```
+
+
+:::
+
+
+::: g-col-5
+### CPAL.INTERNET.001
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> How often is the internet available to people in your household?
+:::
+:::
+
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.INTERNET.001)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+
+
+```{r internet, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.INTERNET.001)) %>%
+  mutate(CPAL.INTERNET.001 = factor(
+    case_when(
+      CPAL.INTERNET.001 == 0 ~ "Never available",
+      CPAL.INTERNET.001 == 1 ~ "Rarely available",
+      CPAL.INTERNET.001 == 2 ~ "Sometimes available",
+      CPAL.INTERNET.001 == 3 ~ "Usually available",
+      CPAL.INTERNET.001 == 4 ~ "Always available"
+    ),
+    levels = c("Never available", "Rarely available", "Sometimes available", "Usually available", "Always available")
+  )) %>%
+  group_by(CPAL.INTERNET.001) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = prop, y = CPAL.INTERNET.001, fill = CPAL.INTERNET.001)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  geom_text(aes(label = ifelse(prop > 0.10, scales::percent(prop, scale = 100), "")), 
+            position = position_dodge(width=0.9), 
+            hjust = 1.1, 
+            size = 8, 
+            colour = "white") +
+  geom_text(aes(label = ifelse(prop <= 0.10, scales::percent(prop, scale = 100), "")), 
+            position = position_dodge(width=0.9), 
+            hjust = -0.1, 
+            size = 8, 
+            colour = "grey") +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_text(size = 16),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = colorRampPalette(c( palette_cpal_main[2], palette_cpal_main[1]))(5),
+                    c("Never available", "Rarely available", "Sometimes available", "Usually available", "Always available")) +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), expand = expansion(mult = c(0.1, 0)))
+
+```
+
+
+:::
+
+::: g-col-5
+### CPAL.HOME.005
+
+> Is your home's heating equipment able to keep you warm in the winter?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.HOME.005)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r home02, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.HOME.005)) %>%
+  mutate(CPAL.HOME.005 = case_when(
+    CPAL.HOME.005 == 2 ~ "Always",
+    CPAL.HOME.005 == 0 ~ "No",
+    CPAL.HOME.005 == 1 ~ "Sometimes"
+  )) %>%
+  group_by(CPAL.HOME.005) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.HOME.005)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1,label = ifelse(prop > 0.10, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 8) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Always" = palette_cpal_main[1], "No" = palette_cpal_main[2], "Sometimes" = palette_cpal_main[4]),
+                    breaks = c("Always", "Sometimes", "No"))
+
+```
+
+:::
+
+::: g-col-5
+### CPAL.HOME.006
+
+> Is your home's cooling equipment (air conditioning, fans, etc.) able to keep you cool in the summer?
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.HOME.006)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r home03, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.HOME.006)) %>%
+  mutate(CPAL.HOME.006 = case_when(
+    CPAL.HOME.006 == 2 ~ "Always",
+    CPAL.HOME.006 == 0 ~ "No",
+    CPAL.HOME.006 == 1 ~ "Sometimes"
+  )) %>%
+  group_by(CPAL.HOME.006) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.HOME.006)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x = 1.2, label = ifelse(prop > 0.05, scales::percent(prop , scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Always" = palette_cpal_main[1], "No" = palette_cpal_main[2], "Sometimes" = palette_cpal_main[4]),
+                    breaks = c("Always", "Sometimes", "No"))
+
+```
+
+:::
+
+::: g-col-12
+In total, only **`r scales::percent(nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005), CPAL.HOME.006 == 2, CPAL.HOME.005 == 2))/nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005))), accuracy = 0.1)`** of respondents say that both their *heating and cooling always work* at home.
+
+<!-- When only considering respondents with at least one child 6 years old or under, this percentage `r paste0( ifelse(  nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005), CPAL.HOME.006 == 2, CPAL.HOME.005 == 2))/nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005))) < nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005), CPAL.HOME.006 == 2, CPAL.HOME.005 == 2, !is.na(CPAL.CBCL.015)))/nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005))), "rises", "drops"  ), " to ", scales::percent(nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005), CPAL.HOME.006 == 2, CPAL.HOME.005 == 2, is.numeric(CPAL.CBCL.015)))/nrow(df %>% filter(!is.na(CPAL.HOME.006), !is.na(CPAL.HOME.005))), accuracy = 0.1), "."  )` -->
+:::
+
+
+::: g-col-5
+### CPAL.MH.009
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> In the last 30 days, were you evicted from the place you rented?
+:::
+:::
+
+
+**Rate of response (renters):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.MH.009)))/nrow(df %>% filter(CPAL.DEBT.007 == 1)), accuracy = 0.1)`
+
+**Rate of response (total):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.MH.009)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+#### **`r scales::percent(nrow(df %>% filter(CPAL.MH.009 == 1, !is.na(CPAL.MH.009)))/nrow(df %>% filter(!is.na(CPAL.MH.009))), accuracy = 0.1)`** of renters report being *evicted* in the *past 30 days*.
+
+
+
+
+```{r home04, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.MH.009)) %>%
+  mutate(CPAL.MH.009 = case_when(
+    CPAL.MH.009 == 0 ~ "Not evicted",
+    CPAL.MH.009 == 1 ~ "Evicted",
+    TRUE ~ "Other"
+  )) %>%
+  filter(CPAL.MH.009 != "Other") %>%
+  group_by(CPAL.MH.009) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.MH.009)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.25,label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Evicted" = palette_cpal_main[2], "Not evicted" = palette_cpal_main[1]),
+                    breaks = c("Evicted", "Not evicted"))
+
+```
+
+:::
+
+:::
+
+::: grid
+
+::: g-col-5
+
+:::
+
+::: g-col-7
+
+
+```{r home04_2, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.MH.009), CPAL.MH.009 %in% c(0:1)) %>%
+  group_by(`Income Bracket`) %>%
+  summarize(`Not evicted` = sum(CPAL.MH.009 == 0)/n(), `Evicted` = sum(CPAL.MH.009 == 1)/n()) %>%
+  gather(key = "evicted", value = "prop", -`Income Bracket`) %>%
+  mutate(
+    evicted = factor(
+      evicted,
+    levels = c("Not evicted","Evicted"))
+  ) %>%
+  ggplot(aes(x = `Income Bracket`, y = prop, fill = `Income Bracket`, alpha = evicted)) +
+  geom_text(aes(label = ifelse(evicted == "Evicted", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+        position = position_stack(), hjust = -0.1, size = 8, colour = "grey") +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  coord_flip() +
+  labs(title = "Evictions by income") +
+  theme(
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+
+
+# df %>%
+#   filter(!is.na(CPAL.MH.009), CPAL.MH.009 %in% c(0:1)) %>%
+#   group_by(CPAL.DEMO.007.2) %>%
+#   summarize(`Not evicted` = sum(CPAL.MH.009 == 0)/n(), `Evicted` = sum(CPAL.MH.009 == 1)/n()) %>%
+#   gather(key = "evicted", value = "prop", -CPAL.DEMO.007.2) %>%
+#   mutate(
+#     evicted = factor(
+#       evicted,
+#     levels = c("Not evicted","Evicted"))
+#   ) %>%
+#   ggplot(aes(x = CPAL.DEMO.007.2, y = prop, fill = CPAL.DEMO.007.2, alpha = evicted)) +
+#   geom_text(aes(label = ifelse(evicted == "Evicted", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+#         position = position_stack(), hjust = -0.1, size = 7, colour = "grey") +
+#   geom_bar(stat = "identity", position = "stack", width = 0.9) +
+#   coord_flip() +
+#   labs(title = "Evictions by race") +
+#   theme(
+#     axis.text.y = element_text(size = 16),
+#     axis.title = element_blank(),
+#     axis.text.x = element_blank(),
+#     legend.position = "none",
+#     plot.background = element_rect(fill = "transparent", colour = NA),
+#     panel.background = element_rect(fill = "transparent", colour = NA),
+#     strip.background = element_rect(fill = "transparent", colour = NA)
+#   ) +
+#   scale_alpha_manual(values = c(0.2, 1))
+
+```
+
+```{r whoevicted, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(CPAL.MH.009 == 1) %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  tally() %>%
+  mutate(prop = n/sum(n),
+         CPAL.DEMO.007.2 = stringr::str_wrap(CPAL.DEMO.007.2, width = 20)
+) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.DEMO.007.2)) +
+    geom_bar(width = 0.7, stat = "identity") +
+    coord_polar(theta = "y", start = 0) +
+    labs(title = "Who is getting evicted?") +
+    geom_text(aes(x=1.12,label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+              position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16),
+      legend.position = "left",
+      legend.title = element_blank(),
+      legend.key.size = unit(2, "lines"), 
+      legend.text = element_text(size = 14),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank(),
+      plot.background = element_rect(fill = "transparent", colour = NA),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      strip.background = element_rect(fill = "transparent", colour = NA)
+    )
+
+
+```
+
+
+:::
+
+:::
+
+::: {.column-margin}
+
+Note: evictions $n=`r nrow(df %>% filter(CPAL.MH.009 == 1))`$.
+
+:::
+
+::: grid
+
+::: g-col-5
+### CPAL.MH.010
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> In the last 30 days, was your mortgage foreclosed on?
+:::
+:::
+
+**Rate of response (homeowners):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.MH.010)))/nrow(df %>% filter(CPAL.DEBT.007 == 2)), accuracy = 0.1)`
+
+**Rate of response (total):** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.MH.010)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+&nbsp;
+
+#### **`r scales::percent(nrow(df %>% filter(CPAL.MH.010 == 1, !is.na(CPAL.MH.010)))/nrow(df %>% filter(!is.na(CPAL.MH.010))), accuracy = 0.1)`** of homeowners report being *foreclosed on* in the *past 30 days*.
+
+
+
+```{r home05, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.MH.010)) %>%
+  mutate(CPAL.MH.010 = case_when(
+    CPAL.MH.010 == 0 ~ "Not foreclosed",
+    CPAL.MH.010 == 1 ~ "Foreclosed",
+    TRUE ~ "Other"
+  )) %>%
+  filter(CPAL.MH.010 != "Other") %>%
+  group_by(CPAL.MH.010) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.MH.010)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x=1.25,label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = c("Foreclosed" = palette_cpal_main[2], "Not foreclosed" = palette_cpal_main[1]),
+                    breaks = c("Foreclosed", "Not foreclosed"))
+
+```
+
+
+Most homeowners make *less than \$100,000*, as do **all** who were *foreclosed on*.
+
+:::
+
+:::
+
+::: grid
+
+::: g-col-5
+:::
+
+::: g-col-7
+
+```{r home05_2, dev = "png", dev.args=list(bg="transparent")}
+
+# df %>%
+#   filter(Annual2023Income < 500000) %>%
+#   filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
+#   mutate(CPAL.MH.010 = case_when(
+#     CPAL.MH.010 == 0 ~ "Not foreclosed on",
+#     CPAL.MH.010 == 1 ~ "Foreclosed on",
+#     TRUE ~ "Other"
+#   )) %>%
+#   ggplot(aes(x = Annual2023Income, fill = CPAL.MH.010)) +
+#   geom_histogram(binwidth = 10000, boundary = 0) +
+#   scale_x_continuous(
+#     labels = scales::dollar_format(),
+#     limits = c(0, 500000)
+#   ) +
+#   theme_minimal() +
+#   theme(axis.title.x = element_blank(),
+#         plot.background = element_rect(fill = "transparent", colour = NA),
+#         panel.background = element_rect(fill = "transparent", colour = NA),
+#         strip.background = element_rect(fill = "transparent", colour = NA),
+#         legend.text = element_text(size = 12)
+#         ) +
+#   scale_fill_manual(values = c("Foreclosed on" = palette_cpal_main[2], "Not foreclosed on" = palette_cpal_main[1]),
+#                     breaks = c("Foreclosed on", "Not foreclosed on"))
+
+df %>%
+  filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
+  group_by(`Income Bracket`) %>%
+  summarize(`Not foreclosed on` = sum(CPAL.MH.010 == 0)/n(), `Foreclosed on` = sum(CPAL.MH.010 == 1)/n()) %>%
+  gather(key = "foreclosed", value = "prop", -`Income Bracket`) %>%
+  mutate(
+    foreclosed = factor(
+      foreclosed,
+    levels = c("Not foreclosed on","Foreclosed on"))
+  ) %>%
+  ggplot(aes(x = `Income Bracket`, y = prop, fill = `Income Bracket`, alpha = foreclosed)) +
+  geom_text(aes(label = ifelse(foreclosed == "Foreclosed on", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+        position = position_stack(), hjust = -0.1, size = 8, colour = "grey") +
+  geom_bar(stat = "identity", position = "stack", width = 0.9) +
+  coord_flip() +
+  labs(title = "Foreclosures by income") +
+  theme(
+    axis.text.y = element_text(size = 16),
+    axis.title = element_blank(),
+    axis.text.x = element_blank(),
+    legend.position = "none",
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_alpha_manual(values = c(0.2, 1))
+
+# df %>%
+#   filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
+#   group_by(CPAL.DEMO.007.2) %>%
+#   summarize(`Not foreclosed on` = sum(CPAL.MH.010 == 0)/n(), `Foreclosed on` = sum(CPAL.MH.010 == 1)/n()) %>%
+#   gather(key = "foreclosed", value = "prop", -CPAL.DEMO.007.2) %>%
+#   mutate(
+#     foreclosed = factor(
+#       foreclosed,
+#     levels = c("Not foreclosed on","Foreclosed on"))
+#   ) %>%
+#   ggplot(aes(x = CPAL.DEMO.007.2, y = prop, fill = CPAL.DEMO.007.2, alpha = foreclosed)) +
+#   geom_text(aes(label = ifelse(foreclosed == "Foreclosed on", scales::percent(prop, scale = 100, accuracy = 0.1), "")),
+#         position = position_stack(), hjust = -0.1, size = 8, colour = "grey") +
+#   geom_bar(stat = "identity", position = "stack", width = 0.9) +
+#   coord_flip() +
+#   labs(title = "Foreclosures by race") +
+#   theme(
+#     axis.text.y = element_text(size = 16),
+#     axis.title = element_blank(),
+#     axis.text.x = element_blank(),
+#     legend.position = "none",
+#     plot.background = element_rect(fill = "transparent", colour = NA),
+#     panel.background = element_rect(fill = "transparent", colour = NA),
+#     strip.background = element_rect(fill = "transparent", colour = NA)
+#   ) +
+#   scale_alpha_manual(values = c(0.2, 1))
+
+```
+
+```{r whoforc, dev = "png", dev.args=list(bg="transparent")}
+
+df %>%
+  filter(!is.na(CPAL.MH.010), CPAL.MH.010 %in% c(0:1)) %>%
+  group_by(CPAL.DEMO.007.2) %>%
+  tally() %>%
+  mutate(prop = n/sum(n),
+         CPAL.DEMO.007.2 = stringr::str_wrap(CPAL.DEMO.007.2, width = 20)
+) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.DEMO.007.2)) +
+    geom_bar(width = 0.7, stat = "identity") +
+    coord_polar(theta = "y", start = 0) +
+    labs(title = "Who is getting foreclosed on?") +
+    geom_text(aes(x=1.12,label = ifelse(prop > 0.05, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+              position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16),
+      legend.position = "left",
+      legend.title = element_blank(),
+      legend.key.size = unit(2, "lines"), 
+      legend.text = element_text(size = 14),
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      axis.title = element_blank(),
+      panel.grid = element_blank(),
+      plot.background = element_rect(fill = "transparent", colour = NA),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      strip.background = element_rect(fill = "transparent", colour = NA)
+    )
+
+
+```
+
+
+:::
+
+:::
+
+
+::: {.column-margin}
+
+Note: foreclosures $n=`r nrow(df %>% filter(CPAL.MH.010 == 1))`$.
+
+&nbsp;
+
+The selection of homeowners in lower income ranges is likely due to data misentry; *we are currently still reviewing these responses*.
+:::
+
+
+::: grid
+
+::: g-col-5
+### CPAL.DALLASCORE.003
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> During the past three months, has any member of your household spent at least one night in jail or prison?
+:::
+:::
+
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(rowSums(is.na(.[grepl("^CPAL.DALLASCORE.003_", names(.))])) < ncol(.)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+<!-- **`r scales::percent(nrow(df %>% filter(CPAL.MH.010 == 1, !is.na(CPAL.MH.010)))/nrow(df %>% filter(!is.na(CPAL.MH.010))), accuracy = 0.1)` of respondents with at least one child aged 6 or younger in the home report a household member spending at least one night in jail or prison in the past 3 months.** -->
+
+
+
+```{r home07, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.DALLASCORE.003_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[999]$") ~ palette_cpal_main[1],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.15, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), 
+          hjust = -0.1,
+          size = 7, 
+          colour = "grey") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.DALLASCORE.003_1" = "Myself",
+                 "CPAL.DALLASCORE.003_2" = "A parent",
+                 "CPAL.DALLASCORE.003_3" = "A partner or spouse" ,
+                 "CPAL.DALLASCORE.003_4" = "A child",
+                 "CPAL.DALLASCORE.003_5" = "Other",
+                 "CPAL.DALLASCORE.003_999" = "Does not apply")
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+```
+
+
+
+
+:::
+
+:::
+
+
+## Community and wellbeing
+
+::: grid
+
+
+::: g-col-5
+### CPAL.CESD.001.b
+
+> In the past month, please describe how often you felt hopeful about the future
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(!is.na(CPAL.CESD.001.b)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+```{r other02, dev = "png", dev.args=list(bg="transparent")}
+
+# palette_cpal_main[1] blue
+# palette_cpal_main[2] red
+# #808080 grey
+
+df %>%
+  filter(!is.na(CPAL.CESD.001.b)) %>%
+  mutate(CPAL.CESD.001.b = case_when(
+    CPAL.CESD.001.b == 1 ~ "Rarely or never",
+    CPAL.CESD.001.b == 2 ~ "Some or little of the time",
+    CPAL.CESD.001.b == 3 ~ "Occasionally or moderately",
+    CPAL.CESD.001.b == 4 ~ "Most or all of the time"
+  )) %>%
+  group_by(CPAL.CESD.001.b) %>%
+  tally() %>%
+  mutate(prop = n/sum(n)) %>%
+  ggplot(aes(x = "", y = prop, fill = CPAL.CESD.001.b)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar(theta = "y", start = 0) +
+  geom_text(aes(x = 1.2, label = ifelse(prop > 0.08, scales::percent(prop, scale = 100, accuracy = 0.1), "")), 
+            position = position_stack(vjust = 0.5), colour = "white", size= 7) +
+  labs(fill = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "left",
+    legend.key.size = unit(2, "lines"), 
+    legend.text = element_text(size = 14),
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    strip.background = element_rect(fill = "transparent", colour = NA)
+  ) +
+  scale_fill_manual(values = colorRampPalette(c( palette_cpal_main[2], palette_cpal_main[1]))(4),
+                    breaks = c("Rarely or never", "Some or little of the time", "Occasionally or moderately", "Most or all of the time"))
+
+```
+
+:::
+
+
+::: g-col-5
+### CPAL.SOCIALSUPP.003.a
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> Who do you turn to for social support? Think about who you turned to for social support in this last week.
+:::
+:::
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(rowSums(is.na(.[grepl("^CPAL.SOCIALSUPP.003.a", names(.))])) < ncol(.)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+
+```{r socialsupp, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  filter(rowSums(is.na(select(., starts_with("CPAL.SOCIALSUPP.003.a")))) != length(select(., starts_with("CPAL.SOCIALSUPP.003.a")))) %>%  
+  gather(key = "answer", value = "value", starts_with("CPAL.SOCIALSUPP.003.a")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      TRUE ~ palette_cpal_main[1]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.9) +
+  geom_text(aes(label = ifelse(percentage > 0.3, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.3, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), hjust = -0.1, size = 7, colour = "grey") +
+scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.SOCIALSUPP.003.a_1" = "Partner",
+                 "CPAL.SOCIALSUPP.003.a_2" = "Child",
+                 "CPAL.SOCIALSUPP.003.a_3" = "Parent" ,
+                 "CPAL.SOCIALSUPP.003.a_4" = "Relative",
+                 "CPAL.SOCIALSUPP.003.a_5" = "Friend",
+                 "CPAL.SOCIALSUPP.003.a_6" = "Neighbor",
+                 "CPAL.SOCIALSUPP.003.a_7" = "Co-worker",
+                 "CPAL.SOCIALSUPP.003.a_8" = "Member of a religious community",         
+                 "CPAL.SOCIALSUPP.003.a_9" = "Spiritual figure",
+                 "CPAL.SOCIALSUPP.003.a_10" = "Parent group",
+                 "CPAL.SOCIALSUPP.003.a_11" = "Health or mental health professional",
+                 "CPAL.SOCIALSUPP.003.a_12" = "Babysitter",
+                 "CPAL.SOCIALSUPP.003.a_13" = "Childcare provider",
+                 "CPAL.SOCIALSUPP.003.a_14" = "Mentor/teacher"
+                 )
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+```
+
+```{r socialsupp_pov, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  filter(POVERTYLine2023 == 1) %>%
+  filter(rowSums(is.na(select(., starts_with("CPAL.SOCIALSUPP.003.a")))) != length(select(., starts_with("CPAL.SOCIALSUPP.003.a")))) %>%  
+  gather(key = "answer", value = "value", starts_with("CPAL.SOCIALSUPP.003.a")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  ggplot(aes(x = percentage, y = answer)) +
+  geom_bar(stat = "identity", width = 0.9, fill = palette_cpal_main[2]) +
+  geom_text(aes(label = ifelse(percentage > 0.3, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.3, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), hjust = -0.1, size = 7, colour = "grey") +
+scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  labs(title = "Only respondents under the poverty line") +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16),
+    legend.position = "none",
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.SOCIALSUPP.003.a_1" = "Partner",
+                 "CPAL.SOCIALSUPP.003.a_2" = "Child",
+                 "CPAL.SOCIALSUPP.003.a_3" = "Parent" ,
+                 "CPAL.SOCIALSUPP.003.a_4" = "Relative",
+                 "CPAL.SOCIALSUPP.003.a_5" = "Friend",
+                 "CPAL.SOCIALSUPP.003.a_6" = "Neighbor",
+                 "CPAL.SOCIALSUPP.003.a_7" = "Co-worker",
+                 "CPAL.SOCIALSUPP.003.a_8" = "Member of a religious community",         
+                 "CPAL.SOCIALSUPP.003.a_9" = "Spiritual figure",
+                 "CPAL.SOCIALSUPP.003.a_10" = "Parent group",
+                 "CPAL.SOCIALSUPP.003.a_11" = "Health or mental health professional",
+                 "CPAL.SOCIALSUPP.003.a_12" = "Babysitter",
+                 "CPAL.SOCIALSUPP.003.a_13" = "Childcare provider",
+                 "CPAL.SOCIALSUPP.003.a_14" = "Mentor/teacher"
+                 )
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+```
+
+
+:::
+
+::: g-col-5
+### CPAL.DALLASCORE.002
+
+::: grid
+::: g-col-1
+<i class="bi bi-star"></i>
+:::
+::: g-col-11
+> In the past 3 months, have you done any of the following out of concern for your own safety while in your neighborhood?
+:::
+:::
+
+
+**Rate of response:** `r scales::percent(nrow(df %>% filter(rowSums(is.na(.[grepl("^CPAL.DALLASSCORE.002_", names(.))])) < ncol(.)))/nrow(df), accuracy = 0.1)`
+:::
+
+::: g-col-7
+
+
+```{r other01, dev = "png", dev.args=list(bg="transparent")}
+df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.DALLASCORE.002_")) %>%
+  group_by(answer) %>% 
+  summarise(percentage = (sum(value == 1, na.rm = T)/n())) %>% 
+  arrange(desc(percentage)) %>%
+  mutate(
+    color = case_when(
+      stringr::str_detect(answer, "[999]$") ~ palette_cpal_main[1],
+      TRUE ~ palette_cpal_main[2]
+    )
+  ) %>%
+  ggplot(aes(x = percentage, y = answer, fill = color)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = ifelse(percentage > 0.20, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+          position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.20, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+        position = position_dodge(width=0.9), hjust = -0.1, size = 7, colour = "grey") +
+  scale_x_continuous(labels = scales::percent_format(scale = 100), limits = c(0,1)) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    title = element_blank(),
+    axis.title = element_blank(),
+    axis.text.y = element_text(size = 14)
+  ) +
+  scale_color_manual(values = palette_cpal_main) +
+  scale_y_discrete(labels = function(x) {
+    recodes <- c("CPAL.DALLASCORE.002_1" = "Avoid certain streets",
+                 "CPAL.DALLASCORE.002_2" = "Stay in at night",
+                 "CPAL.DALLASCORE.002_3" = "Not travel alone" ,
+                 "CPAL.DALLASCORE.002_4" = "Avoid certain buildings or locations",
+                 "CPAL.DALLASCORE.002_5" = "Carry a weapon",
+                 "CPAL.DALLASCORE.002_6" = "Call 911",
+                 "CPAL.DALLASCORE.002_999" = "Does not apply")
+    return(stringr::str_wrap(recodes[x], width = 30))
+  })
+
+df %>%
+  mutate(unsafe = case_when(
+    rowSums(select(., starts_with("CPAL.DALLASCORE.002_"), -CPAL.DALLASCORE.002_999) == 1, na.rm = TRUE) > 0 ~ 1,
+    CPAL.DALLASCORE.002_999 == 1 ~ 0,
+    TRUE ~ NA_real_
+  )) %>%
+  filter(!is.na(unsafe)) %>%
+  mutate(unsafe = factor(unsafe, levels = c(0, 1)),
+         weight = if_else(unsafe == 1, -1, 1)) %>%
+  ggplot(aes(x = age_yr, fill = unsafe, weight = weight)) +
+    geom_histogram(binwidth = 2.5, alpha = 0.8) +
+    geom_text(aes(x = 80, y = 20, label = "Did not report feeling unsafe"), size = 5, hjust = 1) +
+    geom_text(aes(x = 80, y = -20, label = "Reported feeling unsafe"), size = 5, hjust = 1) +
+    scale_x_continuous(limits = c(0,80)) +
+    scale_y_continuous(limits = c(-150, 150)) +
+    labs(x = "Age", title = stringr::str_wrap("Ages of respondents", width = 40)) + 
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(size = 18),
+      axis.title.y = element_blank(),
+      axis.title.x = element_text(size=18),
+      axis.text.x = element_text(size=16),
+      axis.text.y = element_blank(), # Hide y-axis text
+      axis.ticks.y = element_blank(), # Hide y-axis ticks
+      plot.background = element_rect(fill = "transparent", colour = NA),
+      panel.background = element_rect(fill = "transparent", colour = NA),
+      strip.background = element_rect(fill = "transparent", colour = NA)
+    )
+
+age_groups <- c("0-9", "10-19", "20-29", "30-39", "40-49", "50-59", "60-69", "70-79", "80+")
+
+df %>%
+  filter(rowSums(select(., starts_with("CPAL.DALLASCORE.002_"), -CPAL.DALLASCORE.002_999) == 1, na.rm = TRUE) > 0) %>%
+  group_by(age_bucket) %>%
+  summarise(percentage = sum(CPAL.DALLASCORE.002_5 == 1, na.rm = TRUE) / n()) %>%
+  right_join(data.frame(age_bucket = factor(age_groups, levels = age_groups)), by = "age_bucket") %>%
+  replace_na(list(percentage = 0)) %>%
+  ggplot(aes(x = age_bucket, y = percentage)) +
+  geom_bar(stat = "identity", width = 0.7, fill = palette_cpal_main[2], position = "dodge") +
+  geom_text(aes(label = ifelse(percentage > 0.20, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+            position = position_dodge(width=0.9), hjust = 1.1, size = 7, colour = "white") +
+  geom_text(aes(label = ifelse(percentage <= 0.20, scales::percent(percentage, scale = 100, accuracy = 0.1), "")), 
+            position = position_dodge(width=0.9), hjust = -0.1, size = 7, colour = "grey") +
+  coord_flip() +
+  labs(title = stringr::str_wrap("Proportion of respondents who reported carrying a weapon as a response to feeling unsafe, by age group", width = 40),
+       x = "Age group",
+       y = "Proportion") +
+  scale_y_continuous(labels = scales::percent_format(scale = 1),
+                     limits = c(0, 0.25)) + 
+  theme_minimal() +
+  theme(
+    title = element_text(size = 16),
+    legend.position = "none",
+    axis.text.y = element_text(size = 14),
+    axis.text.x = element_blank(),
+    axis.title = element_blank()
+  )
+  
+```
+
+
+#### All respondents who report carrying a weapon as a response to feeling unsafe are between 20 to 49 years old.
+
+
+```{r other01_map, dev = "png", dev.args=list(bg="transparent")}
+  
+safety_df <- df %>% 
+  gather(key = "answer", value = "value", starts_with("CPAL.DALLASCORE.002_")) %>%
+  filter(answer != "CPAL.DALLASCORE.002_999") %>%
+  group_by(CPAL.DEMO.001) %>%
+  summarize(pct = sum(value, na.rm = TRUE) / n(),
+            n = n(), 
+            n_true = sum(value, na.rm = TRUE),
+            .groups = 'drop') %>%
+  mutate(GEOID = as.character(CPAL.DEMO.001)) %>%
+  left_join(zctas_dallas, by = "GEOID") %>%
+  mutate(
+    per_capita = case_when(
+      estimate > 0 ~ n/estimate,
+      TRUE ~ 0)
+  ) %>%
+  filter(!is.na(NAME)) %>%
+  st_as_sf()
+
+leaflet(safety_df) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    fillColor = ~colorNumeric("Reds", pct)(pct),
+    weight = 1,
+    opacity = 1,
+    color = "white",
+    fillOpacity = 0.7,
+    highlight = TRUE,
+    label = ~as.character(GEOID),
+    popup = ~paste0("ZIP: ", GEOID, 
+                    "<br/>Percent concerned: ", scales::percent(pct, accuracy = 0.1),
+                    "<br/>Count: ", n, 
+                    "<br/>Per capita: ", round(per_capita*1000, digits = 2), "/1000"
+                    )
+  ) %>%
+  addLegend(
+    pal = colorNumeric("Reds", safety_df$pct),
+    values = safety_df$pct,
+    labels = function(values) { scales::percent(values, accuracy = 0.1) }, 
+    title = "Percent who report <br/>concern with safety"
+  )
+
+```
+
+
+:::
+
+:::
