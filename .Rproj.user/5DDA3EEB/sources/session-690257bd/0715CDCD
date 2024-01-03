@@ -1,0 +1,28 @@
+{
+    "id": "0715CDCD",
+    "path": null,
+    "project_path": null,
+    "type": "object_explorer",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1698866123291.0,
+    "source_on_save": false,
+    "relative_order": 9,
+    "properties": {
+        "id": "2e85edfb6a3747edbbd44c036b99ce3f",
+        "name": "response_maps",
+        "title": "response_maps",
+        "language": "R",
+        "source_window_id": "",
+        "Source": "Source"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 3117260372640,
+    "encoding": "",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1698866123291,
+    "read_only": false,
+    "read_only_alternatives": []
+}
