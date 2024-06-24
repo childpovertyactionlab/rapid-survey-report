@@ -1,0 +1,11 @@
+"0","devtools::install_github(c(""childpovertyactionlab/cpaltemplates"", ""childpovertyactionlab/cpaltools"", ""stenevang/sftp""))
+"
+"2","Skipping install of 'cpaltemplates' from a github remote, the SHA1 (b2b2496b) has not changed since last install.
+  Use `force = TRUE` to force installation
+"
+"2","Skipping install of 'cpaltools' from a github remote, the SHA1 (667f8483) has not changed since last install.
+  Use `force = TRUE` to force installation
+"
+"2","Skipping install of 'sftp' from a github remote, the SHA1 (a1ef1ca6) has not changed since last install.
+  Use `force = TRUE` to force installation
+"

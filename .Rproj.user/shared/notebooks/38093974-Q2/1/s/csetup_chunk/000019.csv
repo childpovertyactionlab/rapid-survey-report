@@ -1,0 +1,8 @@
+"0","# 
+# data1raw <- read_sav(""data/Q1 2023 Responses/RAPID-Dallas Initial Recruitment 1 Data.sav"") %>%
+#   mutate(CPAL.DEMO.007.2 = as.character(CPAL.DEMO.007.2))
+# data2raw <- read_sav(""data/Q2 2023 Responses/RAPID-DALLAS_MasterFile_For_CPAL.8.2.23 (1).sav"")
+data2raw <- read_sav(""~/data/RAPID/RAPID-DALLAS_MasterFile_For_CPAL.8.2.23.sav"")
+"
+"2","Error: '~/data/RAPID/RAPID-DALLAS_MasterFile_For_CPAL.8.2.23.sav' does not exist.
+"
